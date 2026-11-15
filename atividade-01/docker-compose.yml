@@ -1,0 +1,153 @@
+# =============================================================================
+# Atividade 01 - Airflow + FakeStore API
+# Airflow 2.9.3 (LocalExecutor) + 2 PostgreSQL: metadados do Airflow e destino
+# das métricas. Credenciais abaixo são só para desenvolvimento local.
+# =============================================================================
+# Antes da primeira subida:   mkdir -p logs && echo "AIRFLOW_UID=$(id -u)" > .env
+#   (sem o mkdir, o Docker cria ./logs como root e o Airflow, rodando com o
+#   seu UID, cai com "Unable to configure handler 'processor'")
+# Subir:                      docker compose up -d
+# Ver saúde:                  docker compose ps
+# Parar sem perder dados:     docker compose stop
+# Derrubar e APAGAR bancos:   docker compose down -v
+# =============================================================================
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.3-python3.11
+  # Roda com o seu UID: os logs gravados em ./logs ficam com dono certo,
+  # sem precisar de chmod.
+  user: "${AIRFLOW_UID:-50000}:0"
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-meta/airflow
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__WEBSERVER__SECRET_KEY: "atividade-01-dev"
+    # Horários na UI em Brasília (a DAG define o fuso dela com pendulum).
+    AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: America/Sao_Paulo
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+  depends_on:
+    postgres-meta:
+      condition: service_healthy
+  networks:
+    - airflow-net
+
+services:
+  # ── Metadados do Airflow (DAG runs, estado das tasks, connections, pools) ──
+  postgres-meta:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-meta-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    networks:
+      - airflow-net
+
+  # ── Destino: onde a DAG grava as métricas por categoria ─────────────────────
+  postgres-ecommerce:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ecommerce
+      POSTGRES_PASSWORD: ecommerce
+      POSTGRES_DB: ecommerce
+    volumes:
+      - postgres-ecommerce-data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"   # inspeção de fora: localhost:5434
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "ecommerce"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    networks:
+      - airflow-net
+
+  # ── Inicialização (roda uma vez e sai) ──────────────────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    # Usa o entrypoint da imagem (não /bin/bash direto): é ele que registra o
+    # AIRFLOW_UID como usuário dentro do container. Sem isso o Airflow cai com
+    # "getpwuid(): uid not found". Com "bash" como 1º argumento, o entrypoint
+    # faz esse registro e depois executa o bash com o script abaixo.
+    command:
+      - bash
+      - -c
+      - |
+        # set -e: para no primeiro erro. Sem ele, uma falha no migrate passa
+        # e o echo do fim faz o init sair 0 (sucesso) mesmo quebrado.
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username admin --password admin \
+          --firstname Admin --lastname Atividade \
+          --role Admin --email admin@example.com
+        # Connection do banco destino. "add" falha se o id já existe; apagar
+        # antes deixa o init re-rodável e mantém a connection igual ao arquivo.
+        airflow connections delete postgres_ecommerce > /dev/null 2>&1 || true
+        airflow connections add postgres_ecommerce \
+          --conn-type postgres \
+          --conn-host postgres-ecommerce --conn-port 5432 \
+          --conn-login ecommerce --conn-password ecommerce \
+          --conn-schema ecommerce
+        # Pool que limita as tasks mapeadas a 2 simultâneas. "set" cria ou
+        # atualiza, então já é re-rodável.
+        airflow pools set ecommerce_pool 2 "Limita calcular_metricas a 2 por vez"
+        echo "=== Airflow inicializado: http://localhost:8080 ==="
+    depends_on:
+      postgres-meta:
+        condition: service_healthy
+      postgres-ecommerce:
+        condition: service_healthy
+
+  # ── Scheduler ───────────────────────────────────────────────────────────────
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      # CMD-SHELL (não CMD): com CMD o $${HOSTNAME} não é expandido e o
+      # scheduler aparece unhealthy mesmo funcionando.
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── Webserver (UI) ──────────────────────────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-meta-data:
+  postgres-ecommerce-data:
+
+networks:
+  airflow-net:
+    driver: bridge
