@@ -3,10 +3,10 @@
 # Airflow 2.9.3 (LocalExecutor) + 2 PostgreSQL: metadados do Airflow e destino
 # das métricas. Credenciais abaixo são só para desenvolvimento local.
 # =============================================================================
-# Antes da primeira subida:   mkdir -p logs && echo "AIRFLOW_UID=$(id -u)" > .env
-#   (sem o mkdir, o Docker cria ./logs como root e o Airflow, rodando com o
-#   seu UID, cai com "Unable to configure handler 'processor'")
 # Subir:                      docker compose up -d
+#   O airflow-init cria ./logs com o dono certo; nenhum passo manual antes.
+#   Opcional (Linux/WSL): echo "AIRFLOW_UID=$(id -u)" > .env, para os arquivos
+#   de log saírem com o seu usuário como dono (sem isso, UID 50000).
 # Ver saúde:                  docker compose ps
 # Parar sem perder dados:     docker compose stop
 # Derrubar e APAGAR bancos:   docker compose down -v
@@ -76,6 +76,11 @@ services:
   # ── Inicialização (roda uma vez e sai) ──────────────────────────────────────
   airflow-init:
     <<: *airflow-common
+    # Root só neste serviço, que roda uma vez e sai: precisa dar a ./logs o dono
+    # que o scheduler e o webserver vão usar. Sem isso, o Docker cria a pasta do
+    # bind mount como root e o Airflow, rodando como AIRFLOW_UID, cai com
+    # "Unable to configure handler 'processor'". Mesmo esquema do compose oficial.
+    user: "0:0"
     # Usa o entrypoint da imagem (não /bin/bash direto): é ele que registra o
     # AIRFLOW_UID como usuário dentro do container. Sem isso o Airflow cai com
     # "getpwuid(): uid not found". Com "bash" como 1º argumento, o entrypoint
@@ -87,6 +92,8 @@ services:
         # set -e: para no primeiro erro. Sem ele, uma falha no migrate passa
         # e o echo do fim faz o init sair 0 (sucesso) mesmo quebrado.
         set -e
+        mkdir -p /opt/airflow/logs
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs
         airflow db migrate
         airflow users create \
           --username admin --password admin \
@@ -103,6 +110,9 @@ services:
         # Pool que limita as tasks mapeadas a 2 simultâneas. "set" cria ou
         # atualiza, então já é re-rodável.
         airflow pools set ecommerce_pool 2 "Limita calcular_metricas a 2 por vez"
+        # De novo no fim: os comandos acima, como root, podem ter criado arquivo
+        # em ./logs que o Airflow não conseguiria escrever depois.
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs
         echo "=== Airflow inicializado: http://localhost:8080 ==="
     depends_on:
       postgres-meta:
