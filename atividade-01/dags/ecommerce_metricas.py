@@ -1,8 +1,6 @@
 """Atividade 01 - métricas de produtos por categoria (FakeStore API).
 
-Camada 5.6: gravar_postgres grava as métricas no Postgres de forma idempotente
-(upsert por data_coleta + categoria), via PostgresHook e a Connection
-postgres_ecommerce.
+Camada 5.7: as tasks agrupadas em 3 TaskGroups - ingestao, analise e carga.
 """
 import logging
 import math
@@ -12,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from airflow import __version__ as AIRFLOW_VERSION
-from airflow.decorators import dag, task
+from airflow.decorators import dag, task, task_group
 from airflow.operators.python import get_current_context
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.exceptions import AirflowFailException
@@ -287,9 +285,27 @@ def ecommerce_metricas():
             len(linhas), data_coleta, removidas, total_dia,
         )
 
-    produtos = buscar_produtos()
-    metricas = calcular_metricas.expand(par=separar_por_categoria(produtos))
-    gravar_postgres(consolidar(metricas))
+    # ── TaskGroups ───────────────────────────────────────────────────────────
+    # Agrupam as tasks na UI por etapa do ETL (extrair, transformar, carregar).
+    # Só organização: as dependências continuam saindo das chamadas. Efeito
+    # colateral: o id de cada task ganha o prefixo do grupo
+    # (ex.: ingestao.buscar_produtos), inclusive em `airflow tasks test`.
+
+    @task_group(group_id="ingestao")
+    def ingestao():
+        return buscar_produtos()
+
+    @task_group(group_id="analise")
+    def analise(produtos):
+        # linear -> fan-out (.expand) -> fan-in (consolidar), tudo neste grupo
+        metricas = calcular_metricas.expand(par=separar_por_categoria(produtos))
+        return consolidar(metricas)
+
+    @task_group(group_id="carga")
+    def carga(linhas):
+        gravar_postgres(linhas)
+
+    carga(analise(ingestao()))
 
 
 ecommerce_metricas()

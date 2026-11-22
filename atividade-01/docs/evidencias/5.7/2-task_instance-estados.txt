@@ -1,0 +1,9 @@
+                  run_id                  |            task_id            | instancias | estado  
+------------------------------------------+-------------------------------+------------+---------
+ manual__2026-11-22T14:26:53.718377+00:00 | analise.calcular_metricas     |          4 | success
+ manual__2026-11-22T14:26:53.718377+00:00 | analise.consolidar            |          1 | success
+ manual__2026-11-22T14:26:53.718377+00:00 | analise.separar_por_categoria |          1 | success
+ manual__2026-11-22T14:26:53.718377+00:00 | carga.gravar_postgres         |          1 | success
+ manual__2026-11-22T14:26:53.718377+00:00 | ingestao.buscar_produtos      |          1 | success
+(5 rows)
+

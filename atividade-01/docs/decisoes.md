@@ -260,6 +260,28 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
   Evidências em [`evidencias/5.6/`](evidencias/5.6/): os logs de cada gravação e a tabela
   consultada antes e depois do teste 4.
 
+### 5.7 TaskGroups: `ingestao`, `analise`, `carga`
+
+- **O quê:** três funções com `@task_group` envolvem as chamadas das tasks, e a DAG termina em
+  `carga(analise(ingestao()))`. `ingestao` tem `buscar_produtos`; `analise` tem
+  `separar_por_categoria`, `calcular_metricas` (mapeada) e `consolidar`; `carga` tem
+  `gravar_postgres`.
+- **Por quê:**
+  - O enunciado pede pelo menos 2 grupos. O terceiro, `carga`, separa o "L" do ETL: quem abre a
+    Graph lê extrair → transformar → carregar sem abrir o código.
+  - `analise` concentra as três topologias (linear, fan-out, fan-in), que ficam visíveis ao
+    abrir o grupo.
+  - É só organização: as tasks e as dependências não mudam. As dependências continuam saindo
+    das chamadas das funções.
+- **Efeito colateral:** o id de cada task ganha o prefixo do grupo (`ingestao.buscar_produtos`,
+  `carga.gravar_postgres`). Os comandos de teste das camadas anteriores passam a usar o id novo
+  (ex.: `airflow tasks test ecommerce_metricas ingestao.buscar_produtos <data>`), e os logs ficam
+  em `task_id=ingestao.buscar_produtos/`. O mesmo vale para o nome que os callbacks logam.
+- **Teste:** disparar pela UI e abrir a Graph.
+- **Observado:** execução completa em `success`, com as 5 tasks com prefixo (4 instâncias de
+  `analise.calcular_metricas`). Na Graph, os 3 grupos aparecem em sequência. Evidências em
+  [`evidencias/5.7/`](evidencias/5.7/): print da Graph com os grupos abertos e os estados das
+  tasks tirados do banco de metadados.
+
 ## Próximas camadas
 
-- 5.7 TaskGroups `ingestao`, `analise`, `carga`.
