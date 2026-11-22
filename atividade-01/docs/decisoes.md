@@ -43,6 +43,11 @@ mesmas linhas, o que sustenta a idempotência.
   (2 slots). Quem clona o repo sobe tudo sem configurar nada pela UI, e credencial não fica no
   código da DAG.
 
+- `AIRFLOW__CORE__FERNET_KEY` fica vazio de propósito: a senha da Connection e as Variables
+  ficam em texto puro no banco de metadados. Para um ambiente local com credencial descartável,
+  isso é aceitável, e quem clona sobe tudo sem gerar chave. Num ambiente compartilhado, a chave
+  iria num `.env` fora do git, com um `.env.example` no repo.
+
 ### Problemas encontrados ao subir
 
 Os três vieram da mesma escolha: rodar o Airflow com o UID do usuário (`user: ${AIRFLOW_UID}`), para
@@ -64,11 +69,15 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
 
 ### 5.1 Esqueleto da DAG
 
-- **O quê:** `@dag` com `schedule="0 6 * * *"`, `start_date` em `America/Sao_Paulo` (pendulum),
+- **O quê:** `@dag` com `schedule="0 6 * * *"`, `start_date` em `America/Sao_Paulo` (`zoneinfo`),
   `catchup=False`, e uma task provisória que imprime `ds`, `data_interval_start` e
   `data_interval_end`.
 - **Por quê:** sem o fuso, o cron roda em UTC (06:00 UTC = 03:00 em Brasília). Sem
   `catchup=False`, o Airflow tentaria executar todos os dias desde o `start_date`.
+  O fuso usa `zoneinfo`, da biblioteca padrão, em vez do `pendulum` dos exemplos do Airflow 2.
+  Testado no 2.9.3: o Airflow converte para pendulum por dentro, serializa a DAG e calcula a
+  próxima execução às 06:00 de Brasília. O `pytz` foi descartado:
+  `datetime(..., tzinfo=pytz.timezone(...))` pega o fuso histórico de 1914 (-03:06) em silêncio.
 - **Teste:** `airflow tasks test ecommerce_metricas mostrar_datas <data>`.
 - **Observado:** o comportamento de `ds` x `data_interval_end` descrito em "Qual data gravar".
 
@@ -89,35 +98,59 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
 
 ### 5.3 Resiliência em `buscar_produtos`
 
-- **O quê:** `try/except` que loga e relança (`raise`) erros de rede/HTTP e de formato da
-  resposta; lista vazia vira erro; `retries=3` com `retry_delay=10s`,
-  `retry_exponential_backoff=True` e `max_retry_delay=5min`; callbacks de sucesso, retry e falha.
-  A URL vem da Variable `fakestore_url`, com a URL real como padrão.
-- **Por quê:** o `except` sem `raise` engoliria o erro e a task terminaria verde sem dado. O
-  backoff dá tempo para a API voltar sem martelá-la. Lista vazia passaria como "dia sem produtos"
-  e gravaria métricas falsas. A Variable permite forçar uma falha no teste sem editar o código.
+- **O quê:** `retries=3` com `retry_delay=10s`, `retry_exponential_backoff=True` e
+  `max_retry_delay=5min`; callbacks de sucesso, retry e falha. Os erros se dividem em dois tipos:
+  - **temporário** (rede, DNS, timeout, HTTP 5xx e 429): loga e relança, e o retry cuida;
+  - **permanente** (outro 4xx, JSON inválido, campo faltando, preço inválido, lista vazia):
+    `AirflowFailException`, que falha na hora sem gastar os retries.
+
+  Rede/HTTP e formato da resposta ficam em dois blocos `try`. A URL vem da Variable
+  `fakestore_url`, com a URL real como padrão. Preço passa por `_preco()`, que rejeita `NaN`,
+  infinito, negativo e booleano.
+- **Por quê:**
+  - Um `except` sem `raise` engoliria o erro, e a task terminaria verde sem dado.
+  - O backoff dá tempo para a API voltar sem martelá-la. Já um 404 ou um campo renomeado não
+    melhoram esperando: retentar só atrasa o alerta em ~2 min e faz o callback de retry tratar
+    como passageiro um erro que não é.
+  - Os dois blocos existem porque `resposta.json()` levanta `JSONDecodeError`, que é ao mesmo tempo
+    `RequestException` e `ValueError`. Num bloco só, um corpo que não é JSON seria logado como
+    falha de rede.
+  - `float()` aceita `"NaN"`, `"inf"`, `True` e negativos, e qualquer um estragaria as métricas
+    sem erro nenhum. Lista vazia gravaria um "dia sem produtos" como se fosse verdade.
+  - A Variable permite forçar cada tipo de falha no teste sem editar o código.
 - **Teste:** pela UI, não com `airflow tasks test`, que executa uma tentativa só e não exercita o
   retry.
-  1. Sucesso: despausar a DAG e conferir `[callback sucesso]` no log da task.
-  2. Falha: apontar a Variable para uma URL que não existe, disparar e acompanhar as 4 tentativas.
-     ```bash
-     docker compose exec airflow-scheduler airflow variables set fakestore_url https://fakestoreapi.com/produtosx
-     # depois do teste, senão a execução agendada falha:
-     docker compose exec airflow-scheduler airflow variables delete fakestore_url
-     ```
+  ```bash
+  # permanente: 404
+  docker compose exec airflow-scheduler airflow variables set fakestore_url https://fakestoreapi.com/produtosx
+  # temporário: host que não existe (.invalid é reservado e nunca resolve)
+  docker compose exec airflow-scheduler airflow variables set fakestore_url https://fakestoreapi.invalid/products
+  # depois dos testes, senão a execução agendada falha:
+  docker compose exec airflow-scheduler airflow variables delete fakestore_url
+  ```
+  A validação de preço foi testada chamando `_preco()` direto no container: `10`, `22.3` e `"5"`
+  passam; `"NaN"`, `"inf"`, `-1` e `True` são rejeitados.
 - **Observado:**
-  - Falha: um arquivo por tentativa (`attempt=1.log` a `attempt=4.log`), `404 Client Error` em
-    cada uma, `[callback retry] ... tentativa 1`, `2` e `3`, e por fim
-    `[callback falha] ... esgotou as tentativas (4)` com a task em `FAILED`. Espera entre o fim de
-    uma tentativa e o início da seguinte: ~18 s, ~25 s e ~80 s, dentro das faixas que o Airflow
-    sorteia (10-20 s, 20-40 s, 40-80 s; o último no limite, somado ao ciclo do scheduler).
-  - **Armadilha do `try_number` no Airflow 2.9.** O primeiro teste de sucesso logou "terminou bem
-    na tentativa 2" numa execução que acertou de primeira: havia só `attempt=1.log`, nenhum retry
-    no log, e `try_number = 1` na tabela `task_instance` do banco de metadados. No 2.9,
-    `ti.try_number` vale a tentativa atual só enquanto a task roda; terminada (sucesso, falha ou
-    retry), passa a valer a próxima. Callbacks rodam depois do fim, então os três usam
-    `try_number - 1` (função `_tentativa`). O Airflow 2.10 corrige o comportamento: ao atualizar a
-    imagem, tirar o `-1`.
+  - Sucesso: `[callback sucesso] buscar_produtos terminou bem na tentativa 1`.
+  - Permanente: só `attempt=1.log`, `Erro permanente HTTP 404`,
+    `Immediate failure requested. Marking task as FAILED` e
+    `[callback falha] ... falhou de vez na tentativa 1`, sem nenhum retry.
+  - Temporário: `attempt=1.log` a `attempt=4.log`, `NameResolutionError` em cada uma,
+    `[callback retry]` nas tentativas 1, 2 e 3 e `[callback falha] ... na tentativa 4`. Espera
+    entre o fim de uma tentativa e o início da seguinte: ~17 s, ~23 s e ~59 s. Uma rodada
+    anterior deu ~18, ~25 e ~80 s. As duas caem nas faixas de 10-20, 20-40 e 40-80 s, somadas ao
+    ciclo do scheduler. O Airflow escolhe o ponto dentro da faixa por um hash de dag, task, data e
+    tentativa: tasks diferentes se espalham, mas a mesma execução e tentativa sempre esperam o
+    mesmo tempo.
+  - **Armadilha do `try_number` antes do Airflow 2.10.** O primeiro teste de sucesso logou
+    "terminou bem na tentativa 2" numa execução que acertou de primeira: havia só
+    `attempt=1.log`, nenhum retry no log, e `try_number = 1` na tabela `task_instance` do banco de
+    metadados. Nessas versões, `ti.try_number` vale a tentativa atual só enquanto a task roda;
+    terminada (sucesso, falha ou retry), passa a valer a próxima. Callbacks rodam depois do fim,
+    então `_tentativa()` desconta 1, mas só se a versão for anterior à 2.10, que corrigiu isso.
+  - Callbacks normalmente logam no log da task. Se o processo da task morre (falta de memória,
+    heartbeat perdido), o Airflow roda o de falha no DagFileProcessor, e a mensagem vai para o
+    log dele.
 
 ## Próximas camadas
 
