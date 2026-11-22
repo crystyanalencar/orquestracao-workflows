@@ -1,0 +1,37 @@
+# Clone limpo do GitHub, sem .env e sem mkdir: docker compose -p clone-teste up -d
+$ git log --oneline -1
+20b56a0 docs(atividade-01): README de entrega e init sem passo manual
+
+$ ls .env
+ls: cannot access '.env': No such file or directory
+
+$ ls -la logs  (criada pelo airflow-init, dono AIRFLOW_UID padrao 50000)
+total 20
+drwxr-xr-x 5 50000    root     4096 Nov 22 12:17 .
+drwxr-xr-x 6 crystyan crystyan 4096 Nov 22 12:13 ..
+drwxrwxr-x 3 50000    root     4096 Nov 22 12:17 dag_id=ecommerce_metricas
+drwxr-xr-x 2 50000    root     4096 Nov 22 12:14 dag_processor_manager
+drwxrwxr-x 3 50000    root     4096 Nov 22 12:13 scheduler
+
+$ docker compose -p clone-teste ps -a
+airflow-init	Exited (0) 4 minutes ago
+airflow-scheduler	Up 4 minutes (healthy)
+airflow-webserver	Up 4 minutes (healthy)
+postgres-ecommerce	Up 5 minutes (healthy)
+postgres-meta	Up 5 minutes (healthy)
+
+                run_id                |  state  
+--------------------------------------+---------
+ scheduled__2026-11-21T09:00:00+00:00 | success
+(1 row)
+
+ data_coleta | snapshot 
+-------------+----------
+ 2026-11-22  |        4
+(1 row)
+
+ historico 
+-----------
+         4
+(1 row)
+

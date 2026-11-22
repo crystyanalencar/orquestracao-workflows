@@ -68,8 +68,12 @@ Os três vieram da mesma escolha: rodar o Airflow com o UID do usuário (`user: 
 os logs em `./logs` saírem com o dono certo sem `chmod`.
 
 1. **`Unable to configure handler 'processor'`.** Se `./logs` não existe, o Docker cria a pasta do
-   bind mount como root, e o Airflow, rodando sem ser root, não consegue escrever nela. Correção:
-   criar a pasta antes da primeira subida (`mkdir -p logs`).
+   bind mount como root, e o Airflow, rodando sem ser root, não consegue escrever nela. Primeira
+   correção: criar a pasta antes da primeira subida (`mkdir -p logs`). Isso exigia um passo manual
+   de quem clona, então na fase 8 o `airflow-init` passou a rodar como root (`user: "0:0"`) e a
+   fazer `chown` de `./logs` para o `AIRFLOW_UID`, no começo e no fim do script: mesmo esquema do
+   compose oficial do Airflow. O lab da disciplina resolve com `mkdir -p logs && chmod -R 777
+   logs`; aqui, nenhum passo antes do `up`.
 2. **`getpwuid(): uid not found: 1000`.** O init usava `entrypoint: /bin/bash`, o que pula o
    entrypoint da imagem, que é quem registra o UID arbitrário no `/etc/passwd`. Correção: manter o
    entrypoint padrão e passar o script em `command: [bash, -c, ...]`.
@@ -387,3 +391,17 @@ dags/
   linhas cada (12). De quebra, apareceu o `max_active_runs=1` em ação: a segunda execução foi
   disparada 3 s depois da primeira, ficou enfileirada e só começou às 12:07:22, quando a primeira
   terminou. Evidências em [`evidencias/opcional-historico/`](evidencias/opcional-historico/).
+
+## Fase 8: entrega
+
+- `README.md` com como rodar, a tabela "requisito → onde está → evidência", os opcionais e como
+  testar cada comportamento.
+- **Teste do clone limpo:** o repositório clonado do GitHub numa pasta nova, sem `.env` e sem
+  criar `logs/`, subiu só com `docker compose up -d`. O `airflow-init` criou `logs/` com dono 50000
+  (o padrão sem `.env`), os 4 serviços ficaram `healthy`, e a execução disparada ao despausar
+  terminou em `success`, com 4 linhas no snapshot e 4 no histórico.
+- **Armadilha do teste:** o Compose nomeia o projeto pela pasta. Um clone noutra pasta também
+  chamada `atividade-01` reaproveitaria os containers e volumes da pilha de desenvolvimento. Por
+  isso o teste usou `docker compose -p clone-teste ...`, e a pilha original foi parada antes
+  (mesmas portas 8080 e 5434).
+- Evidência em [`evidencias/fase8-clone-limpo/`](evidencias/fase8-clone-limpo/).
