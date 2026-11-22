@@ -407,7 +407,18 @@ dags/
   chamada `atividade-01` reaproveitaria os containers e volumes da pilha de desenvolvimento. Por
   isso o teste usou `docker compose -p clone-teste ...`, e a pilha original foi parada antes
   (mesmas portas 8080 e 5434).
-- Evidência em [`evidencias/fase8-clone-limpo/`](evidencias/fase8-clone-limpo/).
+- **Repetido na versão final** (depois do operador, dos testes, do alerta e da senha nova): o
+  clone subiu, a DAG de 6 tasks rodou de ponta a ponta com 4 linhas no snapshot e 4 no histórico,
+  e `docker compose run --rm testes` deu 62 passed.
+- **Armadilha nova no segundo clone:** o primeiro `up` foi dado com a pilha original ainda no ar.
+  A porta 5434 estava ocupada, o Docker falhou ao configurar a rede do `postgres-ecommerce` do
+  clone, e o container ficou criado **sem rede nenhuma**. O `up` seguinte, já com as portas
+  livres, só iniciou o container como estava, e a `gravar_postgres` falhou com
+  `could not translate host name "postgres-ecommerce"` (o alerta disparou, já sem `***`). Correção:
+  `docker compose -p clone-teste up -d --force-recreate postgres-ecommerce`. Lição: depois de um
+  `up` que falhou no meio, conferir `docker inspect` (redes e portas) ou recriar, em vez de
+  confiar que o próximo `up` conserta.
+- Evidências em [`evidencias/fase8-clone-limpo/`](evidencias/fase8-clone-limpo/).
 
 ## Opcional: `ValidarProdutosOperator`
 

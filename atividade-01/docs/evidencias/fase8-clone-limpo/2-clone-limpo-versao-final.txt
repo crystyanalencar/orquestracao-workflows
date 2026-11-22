@@ -1,0 +1,27 @@
+# Segundo clone limpo, versão final: docker compose -p clone-teste up -d
+$ git log --oneline -1
+a232768 fix(atividade-01): senha da Connection que nao aparece no codigo
+
+$ ls -ld logs
+drwxr-xr-x 5 50000 root 4096 Nov 22 13:24 logs
+
+$ docker compose -p clone-teste run --rm testes
+62 passed in 7.04s
+
+                  run_id                  |  state  
+------------------------------------------+---------
+ scheduled__2026-11-21T09:00:00+00:00     | failed
+ manual__2026-11-22T16:29:48.793177+00:00 | success
+(2 rows)
+
+ data_coleta | snapshot 
+-------------+----------
+ 2026-11-22  |        4
+(1 row)
+
+ historico 
+-----------
+         4
+(1 row)
+
+# A execucao scheduled falhou por um resto da primeira tentativa (postgres-ecommerce criado sem rede quando a porta 5434 estava ocupada pela pilha original); recriado com --force-recreate, a execucao manual passou.
