@@ -6,9 +6,9 @@ médio, mínimo, máximo e a quantidade de produtos, e grava no PostgreSQL sem d
 guarda um histórico em append para acompanhar a evolução dos preços.
 
 ```
-ingestao                analise                                                  carga
-buscar_produtos ──► separar_por_categoria ──► calcular_metricas ×N ──► consolidar ──► gravar_postgres
-   (linear)              (fan-out: .expand por categoria, pool de 2)   (fan-in)
+ingestao                                analise                                                  carga
+buscar_produtos ──► validar_produtos ──► separar_por_categoria ──► calcular_metricas ×N ──► consolidar ──► gravar_postgres
+   (linear)       (operador customizado)     (fan-out: .expand por categoria, pool de 2)   (fan-in)
 ```
 
 O porquê de cada decisão, como cada parte foi testada e o que se observou estão em
@@ -64,7 +64,7 @@ Opcionais:
 |---|---|
 | Tabela de histórico em append | feito: `metricas_categoria_historico`, na mesma transação do snapshot ([evidência](docs/evidencias/opcional-historico/)) |
 | SLA / alerta | `on_failure_callback` simula o envio do alerta (log `[callback falha]`); um alerta real (e-mail, Slack) entraria nesse ponto |
-| `ValidarProdutosOperator` | não feito; a validação de schema está em [`dags/ecommerce/validacao.py`](dags/ecommerce/validacao.py), chamada por `buscar_produtos` |
+| `ValidarProdutosOperator` | feito: [`dags/ecommerce/operadores.py`](dags/ecommerce/operadores.py), entre `buscar_produtos` e `separar_por_categoria` ([evidência](docs/evidencias/opcional-operador/)) |
 
 Além do pedido: a gravação recusa execução de outro dia (a API só devolve o catálogo atual, então
 um reprocessamento antigo gravaria os preços de hoje por cima do histórico), a validação rejeita
@@ -82,6 +82,7 @@ afetada.
 | Idempotência | **Clear** em `carga.gravar_postgres`, ou disparar de novo no mesmo dia | continua com 4 linhas no dia; `atualizado_em` avança |
 | Erro temporário (retry com backoff) | `docker compose exec airflow-scheduler airflow variables set fakestore_url https://fakestoreapi.invalid/products` e disparar | 4 tentativas, `[callback retry]` nas 3 primeiras, `[callback falha]` no fim |
 | Erro permanente (sem retry) | `... variables set fakestore_url https://fakestoreapi.com/produtosx` e disparar | falha na 1ª tentativa, `[callback falha]` |
+| Schema inválido (operador) | `... variables set fakestore_url https://fakestoreapi.com/users` e disparar | `buscar_produtos` ok, `validar_produtos` falha com `10 de 10 produtos inválidos`, `[callback falha]` |
 | Pool limitando a 2 | `... variables set atraso_metricas_s 15` e disparar; olhar Browse → Task Instances | 2 instâncias `running`, 2 `scheduled`, em duas levas |
 | Execução de outro dia recusada | `docker compose exec airflow-scheduler airflow dags test ecommerce_metricas 2026-01-10` | `execução do dia ... mas hoje é ...`, nada gravado |
 
@@ -97,6 +98,7 @@ atividade-01/
     ecommerce/              a lógica, testável sem Airflow
       api.py                busca na API; erro temporário x permanente
       validacao.py          preço e categoria
+      operadores.py         ValidarProdutosOperator
       calculo.py            agrupamento e métricas
       banco.py              SQL, gravação idempotente e histórico
       callbacks.py          callbacks de sucesso, retry e falha

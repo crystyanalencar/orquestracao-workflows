@@ -344,6 +344,7 @@ dags/
   ecommerce/
     api.py         busca na FakeStore; erro temporário sobe, permanente vira ErroPermanente
     validacao.py   preco(), categoria(), PRECO_MAXIMO
+    operadores.py  ValidarProdutosOperator (entrou depois, ver o opcional)
     calculo.py     separar_por_categoria(), calcular_metricas(), consolidar(): puras
     banco.py       SQL e gravar_metricas(conn, linhas)
     callbacks.py   os 3 callbacks e tentativa()
@@ -405,3 +406,42 @@ dags/
   isso o teste usou `docker compose -p clone-teste ...`, e a pilha original foi parada antes
   (mesmas portas 8080 e 5434).
 - Evidência em [`evidencias/fase8-clone-limpo/`](evidencias/fase8-clone-limpo/).
+
+## Opcional: `ValidarProdutosOperator`
+
+- **O quê:** operador customizado em `dags/ecommerce/operadores.py`, subclasse de `BaseOperator`,
+  entre `buscar_produtos` e `separar_por_categoria`, no grupo `ingestao`. Recebe a lista bruta e
+  devolve a lista validada. Confere: lista não vazia, cada item é objeto, `id` inteiro e sem
+  repetição, categoria e preço pelas regras de `validacao.py`. Junta todos os erros antes de
+  falhar com `AirflowFailException`, listando os 5 primeiros. Tem `on_failure_callback`.
+  `buscar_produtos` passou a só extrair os 3 campos e conferir o formato geral (JSON, lista, não
+  vazia); a validação campo a campo saiu da `api.py` e foi para o operador.
+- **Por quê:**
+  - Operador é a forma de empacotar lógica reutilizável em várias DAGs: qualquer DAG que receba
+    produtos pode validá-los sem copiar código. As regras de cada campo continuam num lugar só
+    (`validacao.py`); o operador aplica as regras à lista e decide se a execução segue.
+  - Todos os erros de uma vez: quem investiga vê quantos produtos vieram ruins e por quê, em vez
+    de corrigir um e descobrir o próximo na execução seguinte.
+  - `AirflowFailException`: dado inválido não melhora com retry. O callback de falha garante o
+    alerta também nesse caso.
+  - `template_fields = ("produtos",)` é o que faz o Airflow trocar o XComArg pela lista real
+    antes do `execute`. É o que permite misturar um operador clássico com tasks TaskFlow: a
+    dependência sai da passagem do XComArg (`produtos=buscar_produtos()`), sem `>>`.
+- **Teste:**
+  1. Execução normal pela UI.
+  2. Schema inválido: o endpoint `/users` da própria FakeStore devolve uma lista válida de objetos
+     que não têm `category` nem `price`.
+     ```bash
+     docker compose exec airflow-scheduler airflow variables set fakestore_url https://fakestoreapi.com/users
+     # disparar; depois:
+     docker compose exec airflow-scheduler airflow variables delete fakestore_url
+     ```
+  O operador também foi testado isolado no container, com uma lista de 7 itens ruins (categoria
+  nula, id repetido, item que não é objeto, `id: True`, preço `"NaN"`, categoria vazia, campos
+  ausentes): `7 de 7 produtos inválidos`, com os 5 primeiros listados e "e mais 2".
+- **Observado:**
+  - Normal: `20 produtos recebidos`, `20 produtos válidos`, tudo em `success`.
+  - `/users`: `buscar_produtos` em `success` (`10 produtos recebidos`), `validar_produtos` em
+    `failed` com `10 de 10 produtos inválidos: produto na posição 0: categoria inválida: None; ...`
+    e `[callback falha] ingestao.validar_produtos`, o resto em `upstream_failed`.
+  - Evidências em [`evidencias/opcional-operador/`](evidencias/opcional-operador/).

@@ -7,9 +7,9 @@ histórico em append para acompanhar a evolução dos preços.
 Este arquivo só monta a DAG: tasks, TaskGroups e a ligação entre eles. A lógica
 mora no pacote ecommerce/ ao lado. Decisões e testes em docs/decisoes.md.
 
-    ingestao                analise                                     carga
-    buscar_produtos ──► separar_por_categoria ──► calcular_metricas ×N ──► consolidar ──► gravar_postgres
-       (linear)              (fan-out, .expand no ecommerce_pool)          (fan-in)
+    ingestao                              analise                                     carga
+    buscar_produtos ──► validar_produtos ──► separar_por_categoria ──► calcular_metricas ×N ──► consolidar ──► gravar_postgres
+       (linear)        (operador customizado)     (fan-out, .expand no ecommerce_pool)          (fan-in)
 """
 import logging
 import time
@@ -23,6 +23,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 from ecommerce import api, banco, calculo, datas
 from ecommerce.callbacks import ao_falhar, ao_tentar_de_novo, ao_ter_sucesso
+from ecommerce.operadores import ValidarProdutosOperator
 
 log = logging.getLogger(__name__)
 
@@ -130,7 +131,15 @@ def ecommerce_metricas():
 
     @task_group(group_id="ingestao")
     def ingestao():
-        return buscar_produtos()
+        # Operador clássico no meio de tasks TaskFlow: recebe a saída de
+        # buscar_produtos (XComArg) e a dependência sai disso, sem ">>".
+        # Callback de falha: produto inválido também avisa.
+        validar = ValidarProdutosOperator(
+            task_id="validar_produtos",
+            produtos=buscar_produtos(),
+            on_failure_callback=ao_falhar,
+        )
+        return validar.output
 
     @task_group(group_id="analise")
     def analise(produtos):

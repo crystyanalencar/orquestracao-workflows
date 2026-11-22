@@ -3,8 +3,6 @@ import logging
 
 import requests
 
-from ecommerce import validacao
-
 URL_PRODUTOS = "https://fakestoreapi.com/products"
 
 # HTTP que pode melhorar esperando: o retry cuida. Além destes, todo 5xx.
@@ -17,12 +15,18 @@ class ErroPermanente(Exception):
     """Erro que não melhora esperando: a DAG falha direto, sem gastar retries."""
 
 
+# Só os campos que o pipeline usa: o retorno vira XCom, guardado no banco de
+# metadados (sem título, descrição e imagem).
+CAMPOS = ("id", "category", "price")
+
+
 def buscar_produtos(url=URL_PRODUTOS):
-    """Devolve [{id, category, price}] da API.
+    """Devolve [{id, category, price}] da API, ainda sem validar os valores.
 
     Erro temporário (rede, timeout, 5xx, 408, 425, 429): a exceção do requests
-    sobe como veio, e o retry da task cuida. Erro permanente (outro 4xx, formato
-    errado, lista vazia): ErroPermanente.
+    sobe como veio, e o retry da task cuida. Erro permanente (outro 4xx, corpo
+    que não é JSON, lista vazia): ErroPermanente. Tipo e valor de cada campo são
+    conferidos depois, pelo ValidarProdutosOperator.
     """
     try:
         # timeout: sem ele, uma API travada prende o worker para sempre.
@@ -46,24 +50,23 @@ def buscar_produtos(url=URL_PRODUTOS):
     # confundido com falha de rede.
     try:
         produtos = resposta.json()
-        # XCom guarda no banco de metadados: levar só os 3 campos usados.
-        enxuto = [
-            {
-                "id": p["id"],
-                "category": validacao.categoria(p["category"]),
-                "price": validacao.preco(p["price"]),
-            }
-            for p in produtos
-        ]
-    except (ValueError, KeyError, TypeError) as erro:
-        # Resposta veio, mas não é o JSON esperado (campo faltando, formato errado).
-        log.error("Resposta inesperada de %s: %r", url, erro)
-        raise ErroPermanente(f"resposta inesperada de {url}: {erro!r}") from erro
+    except ValueError as erro:
+        log.error("Resposta de %s não é JSON: %r", url, erro)
+        raise ErroPermanente(f"resposta de {url} não é JSON: {erro!r}") from erro
 
+    if not isinstance(produtos, list):
+        raise ErroPermanente(f"{url} devolveu {type(produtos).__name__}, esperava lista")
     # Lista vazia não é erro de rede, mas calcular métricas sobre nada
     # gravaria um dia "sem produtos" como se fosse verdade.
-    if not enxuto:
+    if not produtos:
         raise ErroPermanente(f"{url} devolveu 0 produtos")
+
+    # Campo ausente vira None e item que não é objeto passa como veio: o
+    # operador de validação aponta o problema produto a produto.
+    enxuto = [
+        {campo: p.get(campo) for campo in CAMPOS} if isinstance(p, dict) else p
+        for p in produtos
+    ]
 
     log.info("%d produtos recebidos", len(enxuto))
     return enxuto

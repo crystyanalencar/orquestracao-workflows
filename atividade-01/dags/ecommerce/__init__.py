@@ -2,6 +2,7 @@
 
 - api: busca na FakeStore e separa erro temporário de permanente
 - validacao: regras de preço e categoria
+- operadores: ValidarProdutosOperator, que aplica as regras à lista inteira
 - calculo: agrupamento e métricas por categoria
 - banco: SQL e gravação idempotente no Postgres
 - callbacks: callbacks de sucesso, retry e falha
