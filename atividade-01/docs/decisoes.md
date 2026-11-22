@@ -155,9 +155,48 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
     heartbeat perdido), o Airflow roda o de falha no DagFileProcessor, e a mensagem vai para o
     log dele.
 
+### 5.4 Fan-out por categoria, no pool
+
+- **O quê:** `separar_por_categoria` agrupa os preços e devolve uma lista de pares
+  `{categoria, precos}`, em ordem alfabética. `calcular_metricas.expand(par=...)` cria uma
+  instância por par, com `pool="ecommerce_pool"` (2 slots), e cada uma devolve `qtd`, `media`
+  (2 casas), `minimo` e `maximo`. O `map_index_template` faz a UI mostrar o nome da categoria em
+  vez de `0..3`. A Variable `atraso_metricas_s` (padrão 0) faz cada instância dormir N segundos
+  antes de calcular.
+- **Por quê:**
+  - Os pares já levam os preços, então nenhuma instância chama a API de novo: uma requisição só
+    por execução, e as tasks mapeadas não dependem da rede.
+  - O número de categorias vem do dado, não do código. Se a API ganhar uma quinta categoria, o
+    `.expand` cria a quinta instância sozinho.
+  - O pool limita quantas instâncias rodam ao mesmo tempo, qualquer que seja o número de
+    categorias. É o recurso para proteger um banco ou uma API de excesso de conexões.
+  - O cálculo leva milissegundos, então a fila do pool mal aparece. O atraso deixa as duas levas
+    visíveis na UI. Segue o padrão do `fakestore_url`: o código entregue não espera nada, e o
+    teste se repete com um comando, sem editar o código.
+- **Teste:** pela UI.
+  1. Disparar sem Variable e abrir `calcular_metricas` → **Mapped Tasks**.
+  2. Pool:
+     ```bash
+     docker compose exec airflow-scheduler airflow variables set atraso_metricas_s 15
+     # disparar e abrir Admin → Pools ou Browse → Task Instances; depois:
+     docker compose exec airflow-scheduler airflow variables delete atraso_metricas_s
+     ```
+- **Observado:**
+  - 4 instâncias, cada uma com o nome da sua categoria. Conferido à mão em `men's clothing`
+    (109.95, 22.3, 55.99, 15.99): `qtd 4, media 51.06, minimo 15.99, maximo 109.95`.
+  - Com atraso de 15 s: `electronics` e `jewelery` começam às 10:53:28 e terminam às 10:53:44;
+    `men's clothing` e `women's clothing` ficam em `scheduled` até lá e começam às 10:53:44.9.
+    Duas levas de 2, nunca mais de 2 ao mesmo tempo.
+  - O limite já aparecia sem atraso: na primeira execução, a segunda dupla começou às 10:48:32,
+    só depois de a primeira terminar (10:48:31). Com atraso, a diferença fica grande o bastante
+    para ver na tela.
+  - Evidências em [`evidencias/5.4/`](evidencias/5.4/): logs de `separar_por_categoria` e das 4
+    instâncias, print das Mapped Tasks, print de Task Instances com 2 `running` e 2 `scheduled`,
+    e os horários tirados da tabela `task_instance` (`5-task_instance-horarios.txt`, com
+    `rendered_map_index` e `pool` gravados).
+
 ## Próximas camadas
 
-- 5.4 Fan-out: `separar_por_categoria` + `calcular_metricas.expand(...)` no `ecommerce_pool`.
 - 5.5 Fan-in: `consolidar`.
 - 5.6 Gravação idempotente com `PostgresHook` (upsert por `data_coleta` + `categoria`).
 - 5.7 TaskGroups `ingestao`, `analise`, `carga`.
