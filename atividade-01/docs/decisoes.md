@@ -448,7 +448,7 @@ dags/
 
 ## Testes automatizados (pytest)
 
-- **O quê:** `tests/` com 58 testes, rodados por um serviço `testes` do compose, que só sobe quando
+- **O quê:** `tests/` com 58 testes (62 depois do alerta), rodados por um serviço `testes` do compose, que só sobe quando
   chamado (`profiles`): `docker compose run --rm testes`. Usa a mesma imagem do Airflow, então
   testa contra a versão que roda; o pytest é instalado na hora pelo próprio entrypoint da imagem
   (`_PIP_ADDITIONAL_REQUIREMENTS`).

@@ -63,7 +63,7 @@ Opcionais:
 | Opcional | Situação |
 |---|---|
 | Tabela de histórico em append | feito: `metricas_categoria_historico`, na mesma transação do snapshot ([evidência](docs/evidencias/opcional-historico/)) |
-| SLA / alerta | `on_failure_callback` simula o envio do alerta (log `[callback falha]`); um alerta real (e-mail, Slack) entraria nesse ponto |
+| SLA / alerta | feito: `on_failure_callback` em todas as tasks (`default_args`) monta um `[ALERTA SIMULADO] para #dados-alertas` com DAG, task, execução, erro e link do log; o envio real (Slack) entraria em [`callbacks.py`](dags/ecommerce/callbacks.py) ([evidência](docs/evidencias/alerta/)) |
 | `ValidarProdutosOperator` | feito: [`dags/ecommerce/operadores.py`](dags/ecommerce/operadores.py), entre `buscar_produtos` e `separar_por_categoria` ([evidência](docs/evidencias/opcional-operador/)) |
 
 Além do pedido: a gravação recusa execução de outro dia (a API só devolve o catálogo atual, então
@@ -84,6 +84,7 @@ afetada.
 | Erro permanente (sem retry) | `... variables set fakestore_url https://fakestoreapi.com/produtosx` e disparar | falha na 1ª tentativa, `[callback falha]` |
 | Schema inválido (operador) | `... variables set fakestore_url https://fakestoreapi.com/users` e disparar | `buscar_produtos` ok, `validar_produtos` falha com `10 de 10 produtos inválidos`, `[callback falha]` |
 | Pool limitando a 2 | `... variables set atraso_metricas_s 15` e disparar; olhar Browse → Task Instances | 2 instâncias `running`, 2 `scheduled`, em duas levas |
+| Alerta em task do meio | `docker compose stop postgres-ecommerce`, disparar, esperar ~1 min, `docker compose start postgres-ecommerce` | `gravar_postgres` falha após 3 tentativas; log com `[ALERTA SIMULADO]` |
 | Execução de outro dia recusada | `docker compose exec airflow-scheduler airflow dags test ecommerce_metricas 2026-01-10` | `execução do dia ... mas hoje é ...`, nada gravado |
 
 Apagar as Variables de teste: `docker compose exec airflow-scheduler airflow variables delete <nome>`.
@@ -94,7 +95,7 @@ Apagar as Variables de teste: `docker compose exec airflow-scheduler airflow var
 docker compose run --rm testes
 ```
 
-58 testes com pytest, na mesma imagem do Airflow: validação, cálculo, regra de erro da API (com o
+62 testes com pytest, na mesma imagem do Airflow: validação, cálculo, regra de erro da API (com o
 `requests` simulado), o operador, a gravação (com conexão simulada) e a integridade da DAG. Não
 precisam de rede; o Postgres de metadados precisa estar no ar (`docker compose up -d`). Detalhes em
 [`docs/decisoes.md`](docs/decisoes.md#testes-automatizados-pytest).
