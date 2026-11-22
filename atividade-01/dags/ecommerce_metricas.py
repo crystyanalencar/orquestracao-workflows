@@ -35,6 +35,9 @@ log = logging.getLogger(__name__)
     catchup=False,
     # Uma execução por vez: uma manual não grava junto com a agendada.
     max_active_runs=1,
+    # Alerta em qualquer task que falhar de vez, não só na crítica: se a
+    # gravação cair depois dos retries, o time também é avisado.
+    default_args={"on_failure_callback": ao_falhar},
     tags=["atividade-01"],
 )
 def ecommerce_metricas():
@@ -133,11 +136,10 @@ def ecommerce_metricas():
     def ingestao():
         # Operador clássico no meio de tasks TaskFlow: recebe a saída de
         # buscar_produtos (XComArg) e a dependência sai disso, sem ">>".
-        # Callback de falha: produto inválido também avisa.
+        # O callback de falha vem dos default_args da DAG.
         validar = ValidarProdutosOperator(
             task_id="validar_produtos",
             produtos=buscar_produtos(),
-            on_failure_callback=ao_falhar,
         )
         return validar.output
 

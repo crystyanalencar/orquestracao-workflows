@@ -475,3 +475,29 @@ dags/
 - **Pip na subida:** a própria imagem avisa que instalar pacote ao iniciar é frágil e lento. Para
   testes locais é aceitável; num pipeline de CI, o pytest iria numa imagem própria.
 - Evidência em [`evidencias/testes/`](evidencias/testes/).
+
+## Alerta simulado em todas as tasks
+
+- **O quê:** `default_args={"on_failure_callback": ao_falhar}` na DAG, e `ao_falhar` passou a montar
+  um alerta (`callbacks.montar_alerta`) além da linha `[callback falha]`:
+  `[ALERTA SIMULADO] para #dados-alertas`, com DAG, task (e instância, se mapeada), execução,
+  tentativa, erro e o link direto para o log (`ti.log_url`). Um comentário marca onde entraria o
+  envio real (`SlackWebhookHook` com uma Connection guardando o webhook).
+- **Por quê:** antes, só `buscar_produtos` e `validar_produtos` alertavam. Uma falha de
+  `gravar_postgres` depois dos retries (banco fora) não avisaria ninguém, e o enunciado pede
+  "avisar quando algo falhar". O alerta leva o que quem recebe precisa para agir, inclusive o link
+  para o log. `buscar_produtos` mantém os 3 callbacks explícitos, como o enunciado pede na task
+  crítica.
+- **Teste:** `docker compose stop postgres-ecommerce`, disparar a DAG, esperar e
+  `docker compose start postgres-ecommerce`.
+- **Observado:** ingestão e análise em `success`; `carga.gravar_postgres` falhou nas 3 tentativas
+  (30 s entre elas) com `could not translate host name`; só a última gerou o `[callback falha]` e o
+  `[ALERTA SIMULADO]`. Pytest: 3 testes do alerta e 1 de integridade ("toda task tem callback de
+  falha").
+- **Efeito do mascaramento de senha:** o Airflow trocou `ecommerce` (a senha da Connection) por
+  `***` também no alerta: `DAG: ***_metricas`, e o link do log apontou para `/dags/***_metricas/...`,
+  que não existe. Num envio real o texto enviado não passa pelo mascaramento do log; na
+  simulação, o alerta é o log. É o custo de uma senha igual a uma palavra do código (ver
+  "Ambiente").
+- Evidências em [`evidencias/alerta/`](evidencias/alerta/).
+

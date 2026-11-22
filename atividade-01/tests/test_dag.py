@@ -64,3 +64,7 @@ def test_ordem_linear_fan_out_fan_in(dag):
     assert depois("analise.separar_por_categoria") == {"analise.calcular_metricas"}
     assert depois("analise.calcular_metricas") == {"analise.consolidar"}
     assert depois("analise.consolidar") == {"carga.gravar_postgres"}
+
+
+def test_toda_task_alerta_na_falha(dag):
+    assert all(task.on_failure_callback for task in dag.tasks)
