@@ -121,4 +121,4 @@ atividade-01/
     evidencias/             logs, prints e consultas de cada teste
 ```
 
-As credenciais do compose (`admin/admin`, `ecommerce/ecommerce`) são só para desenvolvimento local.
+As credenciais do compose (`admin/admin`, `ecommerce/ecommerce_dev_2026`) são só para desenvolvimento local.

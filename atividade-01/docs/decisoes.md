@@ -58,9 +58,11 @@ que sustenta a idempotência.
   isso é aceitável, e quem clona sobe tudo sem gerar chave. Num ambiente compartilhado, a chave
   iria num `.env` fora do git, com um `.env.example` no repo.
 - Efeito colateral visto nos logs: o Airflow mascara a senha das Connections em todo log, e a
-  senha aqui é `ecommerce`. Por isso a palavra aparece como `***` até no nome da DAG
+  senha era `ecommerce`. Por isso a palavra aparecia como `***` até no nome da DAG
   (`dag_id=***_metricas`), e `airflow` (senha do banco de metadados) vira `***` na linha de comando
-  da task. O mascaramento funciona; senha igual a palavra comum só deixa o log mais difícil de ler.
+  da task. O mascaramento funciona; o problema era a senha ser uma palavra do código. Depois do
+  alerta simulado, em que isso quebrou o link do log, a senha virou `ecommerce_dev_2026` (ver
+  "Alerta simulado em todas as tasks").
 
 ### Problemas encontrados ao subir
 
@@ -498,6 +500,11 @@ dags/
   `***` também no alerta: `DAG: ***_metricas`, e o link do log apontou para `/dags/***_metricas/...`,
   que não existe. Num envio real o texto enviado não passa pelo mascaramento do log; na
   simulação, o alerta é o log. É o custo de uma senha igual a uma palavra do código (ver
-  "Ambiente").
+  "Ambiente"). Correção: a senha passou a `ecommerce_dev_2026`, que não aparece no código. Como o
+  `POSTGRES_PASSWORD` só vale quando o volume é criado, o banco que já existia foi trocado com
+  `ALTER USER ecommerce PASSWORD '...'` antes de recriar os containers; o `airflow-init` recria a
+  Connection com a senha nova a cada subida. Depois da troca, a gravação seguiu em `success` e o
+  log voltou a mostrar `dag_id=ecommerce_metricas` por extenso
+  ([antes e depois](evidencias/senha/)).
 - Evidências em [`evidencias/alerta/`](evidencias/alerta/).
 

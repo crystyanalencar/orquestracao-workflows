@@ -60,7 +60,11 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: ecommerce
-      POSTGRES_PASSWORD: ecommerce
+      # Senha que não aparece no código: o Airflow mascara a senha das
+      # Connections em todo log, e com "ecommerce" o nome da DAG virava
+      # "***_metricas" (e o link do alerta quebrava). POSTGRES_PASSWORD só vale
+      # na criação do volume; num banco que já existe, trocar com ALTER USER.
+      POSTGRES_PASSWORD: ecommerce_dev_2026
       POSTGRES_DB: ecommerce
     volumes:
       - postgres-ecommerce-data:/var/lib/postgresql/data
@@ -106,7 +110,7 @@ services:
         airflow connections add postgres_ecommerce \
           --conn-type postgres \
           --conn-host postgres-ecommerce --conn-port 5432 \
-          --conn-login ecommerce --conn-password ecommerce \
+          --conn-login ecommerce --conn-password ecommerce_dev_2026 \
           --conn-schema ecommerce
         # Pool que limita as tasks mapeadas a 2 simultâneas. "set" cria ou
         # atualiza, então já é re-rodável.
