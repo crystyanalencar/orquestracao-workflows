@@ -148,6 +148,9 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
     metadados. Nessas versões, `ti.try_number` vale a tentativa atual só enquanto a task roda;
     terminada (sucesso, falha ou retry), passa a valer a próxima. Callbacks rodam depois do fim,
     então `_tentativa()` desconta 1, mas só se a versão for anterior à 2.10, que corrigiu isso.
+  - Logs completos dos três testes (cópia de `logs/`, que fica fora do git) em
+    [`evidencias/5.3/`](evidencias/5.3/): `1-sucesso.log`, `2-permanente-404.log` e
+    `3-temporario-dns-tentativa-1.log` a `-4.log`.
   - Callbacks normalmente logam no log da task. Se o processo da task morre (falta de memória,
     heartbeat perdido), o Airflow roda o de falha no DagFileProcessor, e a mensagem vai para o
     log dele.
