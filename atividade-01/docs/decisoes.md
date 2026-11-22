@@ -47,6 +47,10 @@ mesmas linhas, o que sustenta a idempotência.
   ficam em texto puro no banco de metadados. Para um ambiente local com credencial descartável,
   isso é aceitável, e quem clona sobe tudo sem gerar chave. Num ambiente compartilhado, a chave
   iria num `.env` fora do git, com um `.env.example` no repo.
+- Efeito colateral visto nos logs: o Airflow mascara a senha das Connections em todo log, e a
+  senha aqui é `ecommerce`. Por isso a palavra aparece como `***` até no nome da DAG
+  (`dag_id=***_metricas`), e `airflow` (senha do banco de metadados) vira `***` na linha de comando
+  da task. O mascaramento funciona; senha igual a palavra comum só deixa o log mais difícil de ler.
 
 ### Problemas encontrados ao subir
 
@@ -220,7 +224,42 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
   disparo), com as mesmas métricas da 5.4. Evidências em
   [`evidencias/5.5/`](evidencias/5.5/): log de `consolidar` e print da Graph.
 
+### 5.6 Gravação idempotente: `gravar_postgres`
+
+- **O quê:** `PostgresHook(postgres_conn_id="postgres_ecommerce")` e uma transação só com três
+  passos: `CREATE TABLE IF NOT EXISTS metricas_categoria` (chave primária
+  `(data_coleta, categoria)`, preços em `NUMERIC(10,2)`); upsert com
+  `INSERT ... ON CONFLICT (data_coleta, categoria) DO UPDATE`; e `DELETE` das categorias do dia que
+  não vieram no lote. A coluna `atualizado_em` recebe `now()` a cada gravação.
+- **Por quê:**
+  - Chave primária + `ON CONFLICT`: re-rodar o mesmo dia sobrescreve em vez de duplicar. É o
+    problema do enunciado ("quando alguém roda na mão, os números aparecem duplicados").
+  - Valores sempre por parâmetro (`%(categoria)s`), nunca concatenados: `men's clothing` tem
+    apóstrofo, e concatenar quebraria o SQL ou abriria espaço para injeção.
+  - `DELETE` das sumidas: sem ele, se uma categoria some da API e o dia é reprocessado, a linha
+    antiga fica para trás, e o dia gravado deixa de ser o retrato da última coleta.
+  - Uma transação: ou o dia inteiro muda, ou nada muda. Uma falha no meio não deixa metade das
+    categorias novas e metade antigas.
+  - `NUMERIC` e não `float`: o banco guarda os centavos exatos.
+  - `atualizado_em` prova, olhando a tabela, que a linha foi sobrescrita, não inserida de novo.
+  - Credencial na Connection (criada pelo `airflow-init`), não no código.
+- **Teste:**
+  ```bash
+  docker compose exec postgres-ecommerce psql -U ecommerce -d ecommerce -c "SELECT * FROM metricas_categoria ORDER BY categoria;"
+  ```
+  1. Disparar a DAG e consultar a tabela.
+  2. **Clear** em `gravar_postgres` da mesma execução (mesmo XCom) e consultar de novo.
+  3. Disparar outra execução no mesmo dia (mesma `data_coleta`) e consultar.
+  4. Categoria sumida: inserir uma linha falsa no dia e dar Clear em `gravar_postgres`.
+     ```bash
+     docker compose exec postgres-ecommerce psql -U ecommerce -d ecommerce -c "INSERT INTO metricas_categoria VALUES ('2026-11-22', 'categoria-fantasma', 1, 1, 1, 1);"
+     ```
+- **Observado:** o dia ficou com 4 linhas depois de cada uma das gravações (11:16:39, Clear às
+  11:17:13, outra execução às 11:18:47), com `atualizado_em` avançando a cada uma. No teste 4, o
+  log disse `1 categorias sumidas removidas; o dia tem 4 linhas na tabela`, e a fantasma saiu.
+  Evidências em [`evidencias/5.6/`](evidencias/5.6/): os logs de cada gravação e a tabela
+  consultada antes e depois do teste 4.
+
 ## Próximas camadas
 
-- 5.6 Gravação idempotente com `PostgresHook` (upsert por `data_coleta` + `categoria`).
 - 5.7 TaskGroups `ingestao`, `analise`, `carga`.

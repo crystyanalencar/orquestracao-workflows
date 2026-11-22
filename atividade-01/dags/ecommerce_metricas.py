@@ -1,7 +1,8 @@
 """Atividade 01 - métricas de produtos por categoria (FakeStore API).
 
-Camada 5.5: fan-in. consolidar junta as métricas de todas as categorias numa
-lista só, com a data da coleta, pronta para gravar.
+Camada 5.6: gravar_postgres grava as métricas no Postgres de forma idempotente
+(upsert por data_coleta + categoria), via PostgresHook e a Connection
+postgres_ecommerce.
 """
 import logging
 import math
@@ -13,6 +14,7 @@ import requests
 from airflow import __version__ as AIRFLOW_VERSION
 from airflow.decorators import dag, task
 from airflow.operators.python import get_current_context
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.exceptions import AirflowFailException
 from airflow.models import Variable
 from packaging.version import Version
@@ -21,6 +23,47 @@ TZ = ZoneInfo("America/Sao_Paulo")
 URL_PRODUTOS = "https://fakestoreapi.com/products"
 
 log = logging.getLogger(__name__)
+
+# ── SQL ──────────────────────────────────────────────────────────────────────
+# Chave primária (data_coleta, categoria): uma linha por categoria por dia. É
+# ela que torna a gravação idempotente, junto com o ON CONFLICT abaixo.
+SQL_CRIAR_TABELA = """
+CREATE TABLE IF NOT EXISTS metricas_categoria (
+    data_coleta   DATE          NOT NULL,
+    categoria     TEXT          NOT NULL,
+    qtd_produtos  INTEGER       NOT NULL,
+    preco_medio   NUMERIC(10,2) NOT NULL,
+    preco_minimo  NUMERIC(10,2) NOT NULL,
+    preco_maximo  NUMERIC(10,2) NOT NULL,
+    atualizado_em TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    PRIMARY KEY (data_coleta, categoria)
+)
+"""
+
+# Upsert: se a linha do dia já existe, sobrescreve em vez de duplicar.
+# Valores sempre por parâmetro (%(nome)s), nunca concatenados na string:
+# "men's clothing" tem apóstrofo, e concatenar abriria espaço para SQL injection.
+SQL_UPSERT = """
+INSERT INTO metricas_categoria
+    (data_coleta, categoria, qtd_produtos, preco_medio, preco_minimo, preco_maximo)
+VALUES
+    (%(data_coleta)s, %(categoria)s, %(qtd)s, %(media)s, %(minimo)s, %(maximo)s)
+ON CONFLICT (data_coleta, categoria) DO UPDATE SET
+    qtd_produtos  = EXCLUDED.qtd_produtos,
+    preco_medio   = EXCLUDED.preco_medio,
+    preco_minimo  = EXCLUDED.preco_minimo,
+    preco_maximo  = EXCLUDED.preco_maximo,
+    atualizado_em = now()
+"""
+
+# Reprocessar um dia em que uma categoria sumiu da API deixaria a linha antiga
+# dela para trás. Apaga as categorias do dia que não vieram neste lote, para o
+# dia gravado ser exatamente o retrato da última coleta.
+SQL_LIMPAR_SUMIDAS = """
+DELETE FROM metricas_categoria
+WHERE data_coleta = %(data_coleta)s
+  AND NOT (categoria = ANY(%(categorias)s))
+"""
 
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
@@ -211,9 +254,42 @@ def ecommerce_metricas():
             log.info("  %s", linha)
         return linhas
 
+    @task
+    def gravar_postgres(linhas):
+        # Connection criada pelo airflow-init: credencial fora do código.
+        hook = PostgresHook(postgres_conn_id="postgres_ecommerce")
+        data_coleta = linhas[0]["data_coleta"]
+        categorias = [linha["categoria"] for linha in linhas]
+
+        conn = hook.get_conn()
+        try:
+            # Uma transação só: ou o dia inteiro é gravado, ou nada muda. O
+            # "with conn" faz commit no fim e rollback se algo levantar erro.
+            with conn, conn.cursor() as cur:
+                cur.execute(SQL_CRIAR_TABELA)
+                cur.executemany(SQL_UPSERT, linhas)
+                cur.execute(
+                    SQL_LIMPAR_SUMIDAS,
+                    {"data_coleta": data_coleta, "categorias": categorias},
+                )
+                removidas = cur.rowcount
+                cur.execute(
+                    "SELECT count(*) FROM metricas_categoria WHERE data_coleta = %s",
+                    (data_coleta,),
+                )
+                total_dia = cur.fetchone()[0]
+        finally:
+            conn.close()
+
+        log.info(
+            "%d linhas gravadas (upsert) para %s; %d categorias sumidas removidas; "
+            "o dia tem %d linhas na tabela",
+            len(linhas), data_coleta, removidas, total_dia,
+        )
+
     produtos = buscar_produtos()
     metricas = calcular_metricas.expand(par=separar_por_categoria(produtos))
-    consolidar(metricas)
+    gravar_postgres(consolidar(metricas))
 
 
 ecommerce_metricas()
