@@ -74,7 +74,8 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
   `data_interval_end`.
 - **Por quê:** sem o fuso, o cron roda em UTC (06:00 UTC = 03:00 em Brasília). Sem
   `catchup=False`, o Airflow tentaria executar todos os dias desde o `start_date`.
-  O fuso usa `zoneinfo`, da biblioteca padrão, em vez do `pendulum` dos exemplos do Airflow 2.
+  O fuso usa `zoneinfo`, da biblioteca padrão, em vez do `pendulum` que o enunciado cita. A
+  troca é consciente: o `zoneinfo` foi comentado em aula como alternativa nativa.
   Testado no 2.9.3: o Airflow converte para pendulum por dentro, serializa a DAG e calcula a
   próxima execução às 06:00 de Brasília. O `pytz` foi descartado:
   `datetime(..., tzinfo=pytz.timezone(...))` pega o fuso histórico de 1914 (-03:06) em silêncio.
@@ -195,8 +196,31 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
     e os horários tirados da tabela `task_instance` (`5-task_instance-horarios.txt`, com
     `rendered_map_index` e `pool` gravados).
 
+### 5.5 Fan-in: `consolidar`
+
+- **O quê:** `consolidar(metricas)` recebe a saída das instâncias mapeadas de
+  `calcular_metricas` numa lista. Acrescenta `data_coleta` (o `data_interval_end` convertido para
+  Brasília, em texto ISO), ordena por categoria e devolve as linhas prontas para a gravação.
+- **Por quê:**
+  - É o ponto de encontro do fan-out: o Airflow só roda a task depois que todas as instâncias
+    terminam. A gravação recebe um lote único e consistente, em vez de uma escrita por categoria.
+  - `data_interval_end` chega pelo nome do parâmetro (o TaskFlow injeta variáveis do contexto).
+    A conversão para Brasília vem antes de tirar a data, porque em UTC uma execução depois das
+    21:00 cairia no dia seguinte. Fica em texto porque o XCom é JSON.
+- **Topologias, de forma identificável:**
+  - linear: `buscar_produtos` → `separar_por_categoria`;
+  - fan-out: `separar_por_categoria` → `calcular_metricas` ×N, em paralelo, limitado pelo pool;
+  - fan-in: `calcular_metricas` ×N → `consolidar`.
+
+  Na Graph, a task mapeada aparece como um nó só, `calcular_metricas [ ]`, porque as instâncias
+  só existem em tempo de execução: dependem de quantas categorias a API devolve. Com uma execução
+  selecionada, o nó mostra a contagem. As instâncias aparecem em **Mapped Tasks** ou no Gantt.
+- **Teste:** disparar pela UI e ler o log de `consolidar`.
+- **Observado:** `4 linhas para 2026-11-22` (trigger manual: o fim do intervalo é o momento do
+  disparo), com as mesmas métricas da 5.4. Evidências em
+  [`evidencias/5.5/`](evidencias/5.5/): log de `consolidar` e print da Graph.
+
 ## Próximas camadas
 
-- 5.5 Fan-in: `consolidar`.
 - 5.6 Gravação idempotente com `PostgresHook` (upsert por `data_coleta` + `categoria`).
 - 5.7 TaskGroups `ingestao`, `analise`, `carga`.

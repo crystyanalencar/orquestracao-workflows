@@ -1,8 +1,7 @@
 """Atividade 01 - métricas de produtos por categoria (FakeStore API).
 
-Camada 5.4: fan-out. separar_por_categoria agrupa os preços e
-calcular_metricas roda uma instância por categoria (.expand), limitada pelo
-pool ecommerce_pool (2 slots).
+Camada 5.5: fan-in. consolidar junta as métricas de todas as categorias numa
+lista só, com a data da coleta, pronta para gravar.
 """
 import logging
 import math
@@ -194,8 +193,27 @@ def ecommerce_metricas():
         log.info("Métricas: %s", metricas)
         return metricas
 
+    @task
+    def consolidar(metricas, data_interval_end=None):
+        # Fan-in: recebe a saída de todas as instâncias mapeadas, numa lista.
+        # O Airflow só roda esta task depois que todas terminam.
+        #
+        # data_interval_end vem do contexto (o Airflow preenche pelo nome do
+        # parâmetro). É o fim do intervalo, não o ds: a execução das 06:00 de
+        # 23/11 grava 23/11, que é quando a API foi consultada. Convertido para
+        # Brasília antes de tirar a data; em UTC, uma execução depois das 21:00
+        # cairia no dia seguinte. Vai como texto ISO porque o XCom é JSON.
+        data_coleta = data_interval_end.astimezone(TZ).date().isoformat()
+        linhas = [{"data_coleta": data_coleta, **m} for m in metricas]
+        linhas.sort(key=lambda linha: linha["categoria"])
+        log.info("%d linhas para %s", len(linhas), data_coleta)
+        for linha in linhas:
+            log.info("  %s", linha)
+        return linhas
+
     produtos = buscar_produtos()
-    calcular_metricas.expand(par=separar_por_categoria(produtos))
+    metricas = calcular_metricas.expand(par=separar_por_categoria(produtos))
+    consolidar(metricas)
 
 
 ecommerce_metricas()
