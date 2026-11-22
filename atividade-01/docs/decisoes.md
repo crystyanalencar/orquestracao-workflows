@@ -328,3 +328,39 @@ docker compose exec airflow-scheduler airflow dags test ecommerce_metricas 2026-
 tabela sem nenhuma linha de 19/11. Uma execução normal pela UI, logo antes, seguiu em `success`.
 Evidências em [`evidencias/fase6/`](evidencias/fase6/).
 
+## Estrutura do código
+
+Depois da fase 6, a DAG saiu de um arquivo só (~330 linhas misturando callbacks, validação, SQL,
+chamada da API e montagem) para um arquivo de DAG fino e um pacote com a lógica:
+
+```
+dags/
+  ecommerce_metricas.py   só a DAG: tasks finas, TaskGroups e a ligação
+  .airflowignore          o scheduler não varre ecommerce/ procurando DAG
+  ecommerce/
+    api.py         busca na FakeStore; erro temporário sobe, permanente vira ErroPermanente
+    validacao.py   preco(), categoria(), PRECO_MAXIMO
+    calculo.py     separar_por_categoria(), calcular_metricas(), consolidar(): puras
+    banco.py       SQL e gravar_metricas(conn, linhas)
+    callbacks.py   os 3 callbacks e tentativa()
+    datas.py       TZ, data_coleta(), hoje()
+```
+
+- **Por quê:** o scheduler re-parseia o arquivo da DAG a cada ~30 s, e quem abre o arquivo quer
+  ver o fluxo, não os detalhes. O Módulo 02 da disciplina diz: "se sua DAG é grande demais para
+  ler em 5 minutos, é hora de modularizar". Além disso, lógica em função comum se testa sem subir
+  o Airflow.
+- **Fronteira:** o que é do Airflow fica na DAG: Variables, contexto, pool e
+  `AirflowFailException`. A `api.py` levanta uma exceção própria, `ErroPermanente`, e a DAG a
+  traduz para `AirflowFailException`; o erro temporário sobe como veio, para o retry. Assim a
+  regra "temporário x permanente" fica num módulo testável sem Airflow. As exceções são
+  `callbacks.py` (lê a versão do Airflow) e `banco.py`, que recebe a conexão já aberta pelo
+  `PostgresHook`.
+- **Import:** `dags/` já está no `sys.path` do Airflow, então `from ecommerce import api` funciona
+  sem mexer no compose.
+- **O que mudou no comportamento:** nada. As evidências das camadas anteriores citam linha e
+  arquivo da versão de arquivo único e continuam valendo como registro de cada camada.
+- **Teste de fumaça** depois da mudança: execução normal em `success` (callback de sucesso agora
+  logado por `callbacks.py`, gravação com 4 linhas no dia) e erro permanente com a URL de 404
+  (`api.py` loga `Erro permanente HTTP 404`, a DAG falha na hora, `[callback falha] ... na
+  tentativa 1`). Evidências em [`evidencias/estrutura/`](evidencias/estrutura/).

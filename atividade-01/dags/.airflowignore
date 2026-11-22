@@ -1,0 +1,2 @@
+# Pacote com a lógica da DAG: não define DAG, o scheduler não precisa varrer.
+ecommerce/
