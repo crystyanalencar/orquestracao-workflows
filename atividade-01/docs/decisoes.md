@@ -9,11 +9,33 @@ como foi provado e o que se observou.
 Todo dia às 06:00 (Brasília), buscar os produtos da [FakeStore API](https://fakestoreapi.com),
 calcular por categoria preço médio, mínimo, máximo e quantidade, e gravar no Postgres sem duplicar.
 
+```mermaid
+flowchart LR
+    subgraph ingestao
+        B["buscar_produtos<br/>retry + backoff, 3 callbacks"] --> V["validar_produtos<br/>ValidarProdutosOperator"]
+    end
+
+    subgraph analise
+        S["separar_por_categoria"] --> C1["calcular_metricas<br/>categoria 1"]
+        S --> C2["calcular_metricas<br/>categoria 2"]
+        S --> CN["calcular_metricas<br/>categoria N"]
+        C1 --> K["consolidar"]
+        C2 --> K
+        CN --> K
+    end
+
+    subgraph carga
+        G["gravar_postgres<br/>upsert + histórico"]
+    end
+
+    API(["FakeStore API<br/>GET /products"]) --> B
+    V --> S
+    K --> G
+    G --> DB[("PostgreSQL<br/>metricas_categoria<br/>metricas_categoria_historico")]
 ```
-buscar_produtos ─► separar_por_categoria ─► calcular_metricas[cat 1] ─┐
-   (linear)            (fan-out)            calcular_metricas[cat 2] ─┼─► consolidar ─► gravar_postgres
-                                            calcular_metricas[cat N] ─┘    (fan-in)
-```
+
+Desenho final. O plano inicial não tinha `validar_produtos` (entrou como opcional) nem o histórico;
+as seções abaixo contam a ordem em que cada parte entrou.
 
 ## A fonte de dados
 

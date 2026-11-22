@@ -5,11 +5,35 @@ ele busca os produtos da [FakeStore API](https://fakestoreapi.com), calcula por 
 médio, mínimo, máximo e a quantidade de produtos, e grava no PostgreSQL sem duplicar. Também
 guarda um histórico em append para acompanhar a evolução dos preços.
 
+```mermaid
+flowchart LR
+    subgraph ingestao
+        B["buscar_produtos<br/>retry + backoff, 3 callbacks"] --> V["validar_produtos<br/>ValidarProdutosOperator"]
+    end
+
+    subgraph analise
+        S["separar_por_categoria"] --> C1["calcular_metricas<br/>categoria 1"]
+        S --> C2["calcular_metricas<br/>categoria 2"]
+        S --> CN["calcular_metricas<br/>categoria N"]
+        C1 --> K["consolidar"]
+        C2 --> K
+        CN --> K
+    end
+
+    subgraph carga
+        G["gravar_postgres<br/>upsert + histórico"]
+    end
+
+    API(["FakeStore API<br/>GET /products"]) --> B
+    V --> S
+    K --> G
+    G --> DB[("PostgreSQL<br/>metricas_categoria<br/>metricas_categoria_historico")]
 ```
-ingestao                                analise                                                  carga
-buscar_produtos ──► validar_produtos ──► separar_por_categoria ──► calcular_metricas ×N ──► consolidar ──► gravar_postgres
-   (linear)       (operador customizado)     (fan-out: .expand por categoria, pool de 2)   (fan-in)
-```
+
+Os blocos são os TaskGroups. Até `separar_por_categoria` o fluxo é **linear**; ali ele abre em
+**fan-out** (`calcular_metricas.expand(...)`, uma instância por categoria, no máximo 2 ao mesmo
+tempo pelo `ecommerce_pool`) e fecha em **fan-in** no `consolidar`. O número de instâncias vem
+das categorias que a API devolver.
 
 O porquê de cada decisão, como cada parte foi testada e o que se observou estão em
 [`docs/decisoes.md`](docs/decisoes.md). As evidências (logs, prints, consultas ao banco) estão em
