@@ -365,3 +365,25 @@ dags/
   (`api.py` loga `Erro permanente HTTP 404`, a DAG falha na hora, `[callback falha] ... na
   tentativa 1`). O `dags test` da proteção da data também passou e agora loga "tentativa 1" (antes,
   "tentativa 0"). Evidências em [`evidencias/estrutura/`](evidencias/estrutura/).
+
+## Opcional: tabela de histórico
+
+- **O quê:** `metricas_categoria_historico`, só com `INSERT`: `id` serial, `executado_em`
+  (`now()`), `run_id`, `data_coleta` e as 4 métricas. Gravada por `banco.gravar_metricas` na mesma
+  transação do snapshot. O `run_id` chega do contexto pelo nome do parâmetro em `gravar_postgres`.
+- **Por quê:**
+  - O snapshot responde "qual é o número do dia": uma linha por categoria por dia, sobrescrita a
+    cada reprocessamento. O histórico responde "o que foi gravado e quando" e cresce a cada
+    gravação, inclusive dentro do mesmo dia. É ele que permite acompanhar a evolução dos preços.
+  - Mesma transação: nunca existe histórico de uma gravação que o snapshot não recebeu, nem o
+    contrário.
+  - `run_id` liga cada linha à execução do Airflow que a gravou, para rastrear de onde veio um
+    número.
+- **Teste:** disparar a DAG mais de uma vez no mesmo dia e comparar as tabelas.
+  ```bash
+  docker compose exec postgres-ecommerce psql -U ecommerce -d ecommerce -c "SELECT data_coleta, count(*) AS snapshot FROM metricas_categoria GROUP BY 1;" -c "SELECT run_id, count(*) AS historico, min(executado_em) FROM metricas_categoria_historico GROUP BY 1 ORDER BY 3;"
+  ```
+- **Observado:** três execuções; o snapshot ficou em 4 linhas, o histórico com 3 `run_id` de 4
+  linhas cada (12). De quebra, apareceu o `max_active_runs=1` em ação: a segunda execução foi
+  disparada 3 s depois da primeira, ficou enfileirada e só começou às 12:07:22, quando a primeira
+  terminou. Evidências em [`evidencias/opcional-historico/`](evidencias/opcional-historico/).

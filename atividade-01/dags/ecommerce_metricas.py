@@ -1,7 +1,8 @@
 """Atividade 01 - métricas de produtos por categoria (FakeStore API).
 
 Todo dia às 06:00 (Brasília) busca os produtos, calcula preço médio, mínimo,
-máximo e quantidade por categoria e grava no Postgres sem duplicar.
+máximo e quantidade por categoria e grava no Postgres sem duplicar, mais um
+histórico em append para acompanhar a evolução dos preços.
 
 Este arquivo só monta a DAG: tasks, TaskGroups e a ligação entre eles. A lógica
 mora no pacote ecommerce/ ao lado. Decisões e testes em docs/decisoes.md.
@@ -111,14 +112,15 @@ def ecommerce_metricas():
     # Retry seguro: a gravação é idempotente (upsert + limpeza numa transação).
     # Uma queda rápida do banco às 06:00 não perde o dia.
     @task(retries=2, retry_delay=timedelta(seconds=30))
-    def gravar_postgres(linhas):
+    def gravar_postgres(linhas, run_id=None):
         # Connection criada pelo airflow-init: credencial fora do código.
+        # run_id vem do contexto e vai para o histórico.
         conn = PostgresHook(postgres_conn_id="postgres_ecommerce").get_conn()
-        removidas, total_dia = banco.gravar_metricas(conn, linhas)
+        removidas, total_dia = banco.gravar_metricas(conn, linhas, run_id)
         log.info(
             "%d linhas gravadas (upsert) para %s; %d categorias sumidas removidas; "
-            "o dia tem %d linhas na tabela",
-            len(linhas), linhas[0]["data_coleta"], removidas, total_dia,
+            "o dia tem %d linhas na tabela; %d linhas acrescentadas ao histórico",
+            len(linhas), linhas[0]["data_coleta"], removidas, total_dia, len(linhas),
         )
 
     # ── TaskGroups e ligação ─────────────────────────────────────────────────
