@@ -87,9 +87,40 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
   `men's clothing` (4), `jewelery` (4), `electronics` (6), `women's clothing` (6); preços inteiros
   já convertidos (ex.: `695.0`).
 
+### 5.3 Resiliência em `buscar_produtos`
+
+- **O quê:** `try/except` que loga e relança (`raise`) erros de rede/HTTP e de formato da
+  resposta; lista vazia vira erro; `retries=3` com `retry_delay=10s`,
+  `retry_exponential_backoff=True` e `max_retry_delay=5min`; callbacks de sucesso, retry e falha.
+  A URL vem da Variable `fakestore_url`, com a URL real como padrão.
+- **Por quê:** o `except` sem `raise` engoliria o erro e a task terminaria verde sem dado. O
+  backoff dá tempo para a API voltar sem martelá-la. Lista vazia passaria como "dia sem produtos"
+  e gravaria métricas falsas. A Variable permite forçar uma falha no teste sem editar o código.
+- **Teste:** pela UI, não com `airflow tasks test`, que executa uma tentativa só e não exercita o
+  retry.
+  1. Sucesso: despausar a DAG e conferir `[callback sucesso]` no log da task.
+  2. Falha: apontar a Variable para uma URL que não existe, disparar e acompanhar as 4 tentativas.
+     ```bash
+     docker compose exec airflow-scheduler airflow variables set fakestore_url https://fakestoreapi.com/produtosx
+     # depois do teste, senão a execução agendada falha:
+     docker compose exec airflow-scheduler airflow variables delete fakestore_url
+     ```
+- **Observado:**
+  - Falha: um arquivo por tentativa (`attempt=1.log` a `attempt=4.log`), `404 Client Error` em
+    cada uma, `[callback retry] ... tentativa 1`, `2` e `3`, e por fim
+    `[callback falha] ... esgotou as tentativas (4)` com a task em `FAILED`. Espera entre o fim de
+    uma tentativa e o início da seguinte: ~18 s, ~25 s e ~80 s, dentro das faixas que o Airflow
+    sorteia (10-20 s, 20-40 s, 40-80 s; o último no limite, somado ao ciclo do scheduler).
+  - **Armadilha do `try_number` no Airflow 2.9.** O primeiro teste de sucesso logou "terminou bem
+    na tentativa 2" numa execução que acertou de primeira: havia só `attempt=1.log`, nenhum retry
+    no log, e `try_number = 1` na tabela `task_instance` do banco de metadados. No 2.9,
+    `ti.try_number` vale a tentativa atual só enquanto a task roda; terminada (sucesso, falha ou
+    retry), passa a valer a próxima. Callbacks rodam depois do fim, então os três usam
+    `try_number - 1` (função `_tentativa`). O Airflow 2.10 corrige o comportamento: ao atualizar a
+    imagem, tirar o `-1`.
+
 ## Próximas camadas
 
-- 5.3 Resiliência em `buscar_produtos`: try/except + raise, retry com backoff exponencial, callbacks de falha, retry e sucesso.
 - 5.4 Fan-out: `separar_por_categoria` + `calcular_metricas.expand(...)` no `ecommerce_pool`.
 - 5.5 Fan-in: `consolidar`.
 - 5.6 Gravação idempotente com `PostgresHook` (upsert por `data_coleta` + `categoria`).
