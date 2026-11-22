@@ -445,3 +445,33 @@ dags/
     `failed` com `10 de 10 produtos inválidos: produto na posição 0: categoria inválida: None; ...`
     e `[callback falha] ingestao.validar_produtos`, o resto em `upstream_failed`.
   - Evidências em [`evidencias/opcional-operador/`](evidencias/opcional-operador/).
+
+## Testes automatizados (pytest)
+
+- **O quê:** `tests/` com 58 testes, rodados por um serviço `testes` do compose, que só sobe quando
+  chamado (`profiles`): `docker compose run --rm testes`. Usa a mesma imagem do Airflow, então
+  testa contra a versão que roda; o pytest é instalado na hora pelo próprio entrypoint da imagem
+  (`_PIP_ADDITIONAL_REQUIREMENTS`).
+
+  | Arquivo | O que prova |
+  |---|---|
+  | `test_validacao.py` | preço e categoria: o que passa e o que é rejeitado (NaN, inf, negativo, acima da coluna, booleano, vazio) |
+  | `test_calculo.py` | agrupamento, métricas conferidas à mão (mesmos números da 5.4), categoria nova vira par novo |
+  | `test_datas.py` | `data_coleta` converte para Brasília antes de tirar a data |
+  | `test_api.py` | regra de erro com o `requests` simulado: 5xx/408/425/429 e falha de rede sobem para o retry; outros 4xx, corpo não JSON e lista vazia viram `ErroPermanente` |
+  | `test_operador.py` | `ValidarProdutosOperator`: lista válida, todos os erros juntos, id repetido, limite da mensagem, `produtos` em `template_fields` |
+  | `test_banco.py` | gravação com conexão simulada: SQL com parâmetros, limpeza e histórico com `run_id`, transação e conexão fechada mesmo com erro |
+  | `test_dag.py` | integridade: a DAG carrega sem erro de import, agendamento, tasks nos grupos, retry e callbacks, mapeamento no pool, ordem linear → fan-out → fan-in |
+
+- **Por quê:**
+  - É o que a separação em pacote permite: a lógica se testa sem subir o Airflow nem chamar a
+    API, em segundos.
+  - O teste de integridade pega erro de import e mudança acidental de configuração (retry, pool,
+    agendamento) antes de a DAG chegar ao scheduler.
+  - A regra de erro da API só foi testada de verdade com rede e URLs erradas (5.3); com o
+    `requests` simulado, os casos raros (408, 425, corpo HTML) também ficam cobertos.
+- **Tropeço:** o primeiro teste de mapeamento comparava o nome da classe com `MappedOperator`, mas
+  com `@task` a classe é `DecoratedMappedOperator`, uma subclasse. Trocado por `isinstance`.
+- **Pip na subida:** a própria imagem avisa que instalar pacote ao iniciar é frágil e lento. Para
+  testes locais é aceitável; num pipeline de CI, o pytest iria numa imagem própria.
+- Evidência em [`evidencias/testes/`](evidencias/testes/).

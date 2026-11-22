@@ -88,6 +88,17 @@ afetada.
 
 Apagar as Variables de teste: `docker compose exec airflow-scheduler airflow variables delete <nome>`.
 
+## Testes automatizados
+
+```bash
+docker compose run --rm testes
+```
+
+58 testes com pytest, na mesma imagem do Airflow: validação, cálculo, regra de erro da API (com o
+`requests` simulado), o operador, a gravação (com conexão simulada) e a integridade da DAG. Não
+precisam de rede; o Postgres de metadados precisa estar no ar (`docker compose up -d`). Detalhes em
+[`docs/decisoes.md`](docs/decisoes.md#testes-automatizados-pytest).
+
 ## Estrutura
 
 ```
@@ -103,6 +114,7 @@ atividade-01/
       banco.py              SQL, gravação idempotente e histórico
       callbacks.py          callbacks de sucesso, retry e falha
       datas.py              fuso e data da coleta
+  tests/                    pytest: lógica, operador, gravação e integridade da DAG
   docs/
     decisoes.md             decisões, testes e observações, camada a camada
     evidencias/             logs, prints e consultas de cada teste
