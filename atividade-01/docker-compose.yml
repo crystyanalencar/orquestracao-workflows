@@ -24,7 +24,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__WEBSERVER__SECRET_KEY: "atividade-01-dev"
-    # Horários na UI em Brasília (a DAG define o fuso dela com pendulum).
+    # Horários na UI em Brasília (a DAG define o fuso dela com zoneinfo).
     AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: America/Sao_Paulo
   volumes:
     - ./dags:/opt/airflow/dags

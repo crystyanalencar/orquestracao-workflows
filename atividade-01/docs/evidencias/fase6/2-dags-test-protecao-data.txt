@@ -1,0 +1,10 @@
+$ docker compose exec airflow-scheduler airflow dags test ecommerce_metricas 2026-11-20 2>&1 | grep -E "execução do dia|callback|Marking task"
+airflow.exceptions.AirflowFailException: execução do dia 2026-11-19, mas hoje é 2026-11-22: a API só devolve o catálogo atual, que não pode ser gravado como outro dia
+airflow.exceptions.AirflowFailException: execução do dia 2026-11-19, mas hoje é 2026-11-22: a API só devolve o catálogo atual, que não pode ser gravado como outro dia
+[2026-11-22T14:47:15.104+0000] {taskinstance.py:1206} INFO - Immediate failure requested. Marking task as FAILED. dag_id=ecommerce_metricas, task_id=ingestao.buscar_produtos, run_id=manual__2026-11-20T00:00:00+00:00, execution_date=20261120T000000, start_date=, end_date=20261122T144715
+[2026-11-22T14:47:15.105+0000] {ecommerce_metricas.py:104} ERROR - [callback falha] ingestao.buscar_produtos falhou de vez na tentativa 0. Erro final: execução do dia 2026-11-19, mas hoje é 2026-11-22: a API só devolve o catálogo atual, que não pode ser gravado como outro dia
+    self._execute_task_with_callbacks(context, test_mode, session=session)
+  File "/home/airflow/.local/lib/python3.11/site-packages/airflow/models/taskinstance.py", line 2676, in _execute_task_with_callbacks
+airflow.exceptions.AirflowFailException: execução do dia 2026-11-19, mas hoje é 2026-11-22: a API só devolve o catálogo atual, que não pode ser gravado como outro dia
+
+# "tentativa 0": modo de teste não conta tentativas; corrigido depois com max(n, 1) em _tentativa().

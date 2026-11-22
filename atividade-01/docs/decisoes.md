@@ -29,11 +29,21 @@ buscar_produtos ─► separar_por_categoria ─► calcular_metricas[cat 1] ─
 `data_coleta` = `data_interval_end` no fuso de Brasília, não o `ds`.
 
 O `ds` é o *início* do intervalo agendado: a execução que roda em 16/11 às 06:00 tem `ds` = 15/11.
-A API devolve o retrato do momento da coleta, então a data certa é o fim do intervalo. Isso foi
-confirmado na prática (camada 5.1): em execução manual a data informada vira o fim do intervalo e
-o `ds` cai igual a ela, enquanto na agendada o `ds` é a véspera. O `ds` muda conforme a origem da
-execução; o `data_interval_end` não. Re-executar a mesma data repete o valor e sobrescreve as
-mesmas linhas, o que sustenta a idempotência.
+A API devolve o retrato do momento da coleta, então a data certa é o fim do intervalo. Na execução
+agendada, o fim do intervalo é o próprio 06:00 em que ela roda.
+
+Em execução manual (trigger na UI, `airflow dags test <data>`), o Airflow **recua o fim do
+intervalo para o último 06:00 antes do disparo**, e o `ds` fica igual à data do disparo. Um disparo
+às 11:00 de 22/11 grava 22/11; um disparo às 05:30 de 23/11 também cairia em 22/11. Visto na
+tabela `dag_run`: as execuções manuais das 11h têm `data_interval_end = 2026-11-22 09:00 UTC`.
+Uma primeira versão deste doc dizia que o fim era o momento do disparo; o code review da fase 6
+mostrou o erro.
+
+Isso cria um risco: a API só devolve o catálogo de agora, então uma execução de outro dia (disparo
+antes das 06:00, Clear de uma execução antiga) gravaria os preços de hoje como se fossem daquele
+dia, por cima do histórico verdadeiro. Por isso `buscar_produtos` recusa execução cuja data não é a
+de hoje (ver "Fase 6"). Re-executar no mesmo dia repete a data e sobrescreve as mesmas linhas, o
+que sustenta a idempotência.
 
 ## Ambiente
 
@@ -220,8 +230,8 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
   só existem em tempo de execução: dependem de quantas categorias a API devolve. Com uma execução
   selecionada, o nó mostra a contagem. As instâncias aparecem em **Mapped Tasks** ou no Gantt.
 - **Teste:** disparar pela UI e ler o log de `consolidar`.
-- **Observado:** `4 linhas para 2026-11-22` (trigger manual: o fim do intervalo é o momento do
-  disparo), com as mesmas métricas da 5.4. Evidências em
+- **Observado:** `4 linhas para 2026-11-22` (trigger manual às 11:02: o fim do intervalo recua para
+  o 06:00 do mesmo dia), com as mesmas métricas da 5.4. Evidências em
   [`evidencias/5.5/`](evidencias/5.5/): log de `consolidar` e print da Graph.
 
 ### 5.6 Gravação idempotente: `gravar_postgres`
@@ -283,5 +293,38 @@ os logs em `./logs` saírem com o dono certo sem `chmod`.
   [`evidencias/5.7/`](evidencias/5.7/): print da Graph com os grupos abertos e os estados das
   tasks tirados do banco de metadados.
 
-## Próximas camadas
+## Fase 6: conferência dos requisitos e code review
+
+Com as camadas prontas, o código passou por um code review completo e pela conferência item a item
+do enunciado. Entraram:
+
+- **Proteção da data da execução.** `buscar_produtos` compara a data da execução
+  (`data_interval_end` em Brasília) com hoje. Se forem diferentes, levanta `AirflowFailException`
+  antes de chamar a API: sem retry, com `[callback falha]`. Motivo em "Qual data gravar". A regra
+  da data virou uma função só, `_data_coleta()`, usada também por `consolidar`.
+  Alternativas descartadas: gravar a data real da coleta (re-rodar uma execução antiga criaria o
+  dia de hoje, e "re-rodar a mesma run" deixaria de cair na mesma linha) e só documentar o risco.
+- **Categoria validada** (`_categoria()`): nula ou vazia quebraria `separar_por_categoria`, que
+  não tem retry nem callback, e o alerta não dispararia. Agora é erro de formato na
+  `buscar_produtos`.
+- **Teto do preço** em 99.999.999,99, o limite de `NUMERIC(10,2)`: acima disso, o erro só
+  apareceria na gravação.
+- **HTTP 408 e 425** contam como temporários, junto de 429 e 5xx.
+- **`gravar_postgres` com `retries=2`** (30 s): a gravação é idempotente, então retentar é seguro,
+  e uma queda rápida do banco às 06:00 não perde o dia.
+- **`max_active_runs=1`**: uma execução manual não grava junto com a agendada.
+- **`atraso_metricas_s` tolerante:** valor inválido vira 0 com aviso, em vez de derrubar as
+  instâncias.
+- **Tentativa mínima 1 nos callbacks:** `airflow dags test` não conta tentativas (`try_number` fica
+  0), e o log dizia "tentativa 0".
+
+Teste da proteção:
+```bash
+docker compose exec airflow-scheduler airflow dags test ecommerce_metricas 2026-11-20
+```
+`2026-11-20` é meia-noite UTC (21:00 de 19/11 em Brasília), e o último 06:00 antes disso é o de
+19/11. Observado: `execução do dia 2026-11-19, mas hoje é 2026-11-22`,
+`Immediate failure requested`, `[callback falha]`, as 4 tasks seguintes em `upstream_failed`, e a
+tabela sem nenhuma linha de 19/11. Uma execução normal pela UI, logo antes, seguiu em `success`.
+Evidências em [`evidencias/fase6/`](evidencias/fase6/).
 

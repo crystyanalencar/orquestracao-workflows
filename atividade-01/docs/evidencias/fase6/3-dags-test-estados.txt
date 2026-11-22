@@ -1,0 +1,9 @@
+            task_id            |      state      | try_number 
+-------------------------------+-----------------+------------
+ analise.calcular_metricas     | upstream_failed |          0
+ analise.consolidar            | upstream_failed |          0
+ analise.separar_por_categoria | upstream_failed |          0
+ carga.gravar_postgres         | upstream_failed |          0
+ ingestao.buscar_produtos      | failed          |          0
+(5 rows)
+

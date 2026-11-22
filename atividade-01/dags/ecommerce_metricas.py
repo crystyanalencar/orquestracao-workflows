@@ -1,6 +1,8 @@
 """Atividade 01 - métricas de produtos por categoria (FakeStore API).
 
-Camada 5.7: as tasks agrupadas em 3 TaskGroups - ingestao, analise e carga.
+Todo dia às 06:00 (Brasília) busca os produtos, calcula preço médio, mínimo,
+máximo e quantidade por categoria e grava no Postgres sem duplicar. Tasks em 3
+TaskGroups: ingestao, analise e carga. Decisões e testes em docs/decisoes.md.
 """
 import logging
 import math
@@ -78,7 +80,10 @@ _TRY_NUMBER_ADIANTADO = Version(AIRFLOW_VERSION) < Version("2.10")
 
 
 def _tentativa(ti):
-    return ti.try_number - 1 if _TRY_NUMBER_ADIANTADO else ti.try_number
+    n = ti.try_number - 1 if _TRY_NUMBER_ADIANTADO else ti.try_number
+    # `airflow dags test` e `tasks test` rodam em modo de teste, que não conta
+    # tentativas (try_number fica 0 no banco); sem o max, o log diria "tentativa 0".
+    return max(n, 1)
 
 
 def _ao_ter_sucesso(context):
@@ -109,15 +114,37 @@ def _ao_falhar(context):
 
 # ── Validação ────────────────────────────────────────────────────────────────
 
+# Maior valor que cabe na coluna NUMERIC(10,2) da tabela de destino.
+PRECO_MAXIMO = 99_999_999.99
+
+
 def _preco(valor):
     # float() aceita "NaN", "inf", True e negativos; qualquer um deles estragaria
-    # média, mínimo e máximo das camadas seguintes sem erro nenhum.
+    # média, mínimo e máximo das camadas seguintes sem erro nenhum. Acima do
+    # limite da coluna, só estouraria lá no fim, na gravação.
     if isinstance(valor, bool):
         raise TypeError(f"preço booleano: {valor!r}")
     preco = float(valor)
-    if not math.isfinite(preco) or preco < 0:
+    if not math.isfinite(preco) or not 0 <= preco <= PRECO_MAXIMO:
         raise ValueError(f"preço inválido: {valor!r}")
     return preco
+
+
+def _categoria(valor):
+    # Categoria nula ou vazia quebraria separar_por_categoria (sorted, join), uma
+    # task sem retry nem callback; aqui vira erro de formato com alerta.
+    if not isinstance(valor, str) or not valor.strip():
+        raise ValueError(f"categoria inválida: {valor!r}")
+    return valor
+
+
+def _data_coleta(data_interval_end):
+    # Data que a execução grava: o fim do intervalo, em Brasília. Em execução
+    # agendada é o dia em que ela roda (06:00). Em execução manual, o Airflow
+    # recua o fim para o último 06:00 antes do disparo: disparar às 05:30 cai
+    # no dia anterior. Convertido antes de tirar a data porque em UTC uma
+    # execução depois das 21:00 cairia no dia seguinte. Texto ISO: XCom é JSON.
+    return data_interval_end.astimezone(TZ).date().isoformat()
 
 
 @dag(
@@ -125,6 +152,8 @@ def _preco(valor):
     schedule="0 6 * * *",  # todo dia às 06:00, no fuso do start_date
     start_date=datetime(2026, 11, 1, tzinfo=TZ),
     catchup=False,
+    # Uma execução por vez: uma manual não grava junto com a agendada.
+    max_active_runs=1,
     tags=["atividade-01"],
 )
 def ecommerce_metricas():
@@ -142,12 +171,25 @@ def ecommerce_metricas():
         on_retry_callback=_ao_tentar_de_novo,
         on_failure_callback=_ao_falhar,
     )
-    def buscar_produtos():
+    def buscar_produtos(data_interval_end=None):
+        # A API só devolve o catálogo de agora. Se a execução é de outro dia
+        # (Clear de uma execução antiga, disparo manual antes das 06:00), os
+        # preços de hoje seriam gravados como se fossem daquele dia e
+        # sobrescreveriam o histórico verdadeiro. Esperar não resolve: falha
+        # direto, sem retry, e o callback de falha avisa.
+        data_execucao = _data_coleta(data_interval_end)
+        hoje = datetime.now(TZ).date().isoformat()
+        if data_execucao != hoje:
+            raise AirflowFailException(
+                f"execução do dia {data_execucao}, mas hoje é {hoje}: a API só "
+                "devolve o catálogo atual, que não pode ser gravado como outro dia"
+            )
+
         # URL vem de uma Variable com padrão: permite forçar uma falha no teste
         # (apontando para uma URL errada) sem mexer no código.
         url = Variable.get("fakestore_url", default_var=URL_PRODUTOS)
 
-        # Erro temporário (rede, timeout, 5xx, 429): relança e o retry cuida.
+        # Erro temporário (rede, timeout, 5xx, 408, 425, 429): relança e o retry cuida.
         # Erro permanente (outro 4xx, formato errado, lista vazia): esperar não
         # resolve, então AirflowFailException, que falha sem gastar os retries.
         try:
@@ -157,7 +199,7 @@ def ecommerce_metricas():
             resposta.raise_for_status()
         except requests.HTTPError as erro:
             status = erro.response.status_code
-            if status == 429 or status >= 500:
+            if status in (408, 425, 429) or status >= 500:
                 log.error("Erro temporário HTTP %s em %s", status, url)
                 raise
             log.error("Erro permanente HTTP %s em %s", status, url)
@@ -174,7 +216,11 @@ def ecommerce_metricas():
             produtos = resposta.json()
             # XCom guarda no banco de metadados: levar só os 3 campos usados.
             enxuto = [
-                {"id": p["id"], "category": p["category"], "price": _preco(p["price"])}
+                {
+                    "id": p["id"],
+                    "category": _categoria(p["category"]),
+                    "price": _preco(p["price"]),
+                }
                 for p in produtos
             ]
         except (ValueError, KeyError, TypeError) as erro:
@@ -218,9 +264,14 @@ def ecommerce_metricas():
         # Só para teste: o cálculo leva milissegundos, e a fila do pool nunca
         # apareceria. Com a Variable atraso_metricas_s, cada instância espera
         # N segundos antes de calcular. Sem ela, 0.
-        atraso = int(Variable.get("atraso_metricas_s", default_var=0))
+        valor = Variable.get("atraso_metricas_s", default_var="0")
+        try:
+            atraso = max(float(valor), 0.0)
+        except ValueError:
+            log.warning("atraso_metricas_s inválido (%r), usando 0", valor)
+            atraso = 0.0
         if atraso:
-            log.info("Atraso de teste: %d s", atraso)
+            log.info("Atraso de teste: %s s", atraso)
             time.sleep(atraso)
 
         precos = par["precos"]
@@ -241,10 +292,9 @@ def ecommerce_metricas():
         #
         # data_interval_end vem do contexto (o Airflow preenche pelo nome do
         # parâmetro). É o fim do intervalo, não o ds: a execução das 06:00 de
-        # 23/11 grava 23/11, que é quando a API foi consultada. Convertido para
-        # Brasília antes de tirar a data; em UTC, uma execução depois das 21:00
-        # cairia no dia seguinte. Vai como texto ISO porque o XCom é JSON.
-        data_coleta = data_interval_end.astimezone(TZ).date().isoformat()
+        # 23/11 grava 23/11, que é quando a API foi consultada. buscar_produtos
+        # já garantiu que essa data é a de hoje.
+        data_coleta = _data_coleta(data_interval_end)
         linhas = [{"data_coleta": data_coleta, **m} for m in metricas]
         linhas.sort(key=lambda linha: linha["categoria"])
         log.info("%d linhas para %s", len(linhas), data_coleta)
@@ -252,7 +302,9 @@ def ecommerce_metricas():
             log.info("  %s", linha)
         return linhas
 
-    @task
+    # Retry seguro: a gravação é idempotente (upsert + limpeza numa transação).
+    # Uma queda rápida do banco às 06:00 não perde o dia.
+    @task(retries=2, retry_delay=timedelta(seconds=30))
     def gravar_postgres(linhas):
         # Connection criada pelo airflow-init: credencial fora do código.
         hook = PostgresHook(postgres_conn_id="postgres_ecommerce")
