@@ -363,4 +363,5 @@ dags/
 - **Teste de fumaça** depois da mudança: execução normal em `success` (callback de sucesso agora
   logado por `callbacks.py`, gravação com 4 linhas no dia) e erro permanente com a URL de 404
   (`api.py` loga `Erro permanente HTTP 404`, a DAG falha na hora, `[callback falha] ... na
-  tentativa 1`). Evidências em [`evidencias/estrutura/`](evidencias/estrutura/).
+  tentativa 1`). O `dags test` da proteção da data também passou e agora loga "tentativa 1" (antes,
+  "tentativa 0"). Evidências em [`evidencias/estrutura/`](evidencias/estrutura/).
